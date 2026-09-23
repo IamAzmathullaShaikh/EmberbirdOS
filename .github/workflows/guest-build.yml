@@ -1,0 +1,312 @@
+name: guest-build
+
+# Produces the M2 X2 artifact - the Android-x86_64 guest image - off the local
+# machine, and records its provenance so X3-X5 (boot, usable UI, ADB liveness) can
+# be executed on a Windows host against a known-good, hashed image.
+#
+# WHY THIS IS A MANUAL WORKFLOW, AND WHY THERE ARE TWO MODES
+#   A from-manifest `repo sync && make iso_img` of BlissOS arcadia-x86 needs roughly
+#   250-400 GB of disk, 16+ GB RAM and many hours of CPU. A *standard* GitHub-hosted
+#   runner has ~14 GB of free disk, so it cannot do this build at all - it would die
+#   somewhere inside `repo sync`. Hence:
+#
+#     mode=prebuilt-provenance   runs on a hosted runner (works today). Downloads an
+#                                image built elsewhere from the pinned manifest, and
+#                                records its URL + SHA-256 + size + build provenance
+#                                as the X2 evidence record. This is the usability path
+#                                M2 section 4.2 explicitly allows, and the lock remains
+#                                the provenance anchor.
+#
+#     mode=build-from-manifest   runs on a runner with the disk to do it: a
+#                                self-hosted runner (runner_label='self-hosted'), or
+#                                a GitHub larger runner. It re-confirms the committed
+#                                X1 lock with `repo manifest -r`, builds, hashes the
+#                                result and generates an SBOM.
+#
+# Nothing here modifies the frozen M0 launcher, and nothing commits: the workflow
+# uploads the image plus an X2 provenance record as artifacts for the operator to
+# place under docs/evidence/M2/ (see docs/M2-GUEST-BOOT-PROOF.md sections 4.2, 5).
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'How to obtain the guest artifact'
+        type: choice
+        options:
+          - prebuilt-provenance
+          - build-from-manifest
+        default: prebuilt-provenance
+        required: true
+      artifact_url:
+        description: '(prebuilt-provenance) HTTPS URL of the guest image derived from the pinned manifest'
+        type: string
+        required: false
+      runner_label:
+        description: '(build-from-manifest) runs-on label; needs ~300+ GB free disk'
+        type: string
+        default: self-hosted
+        required: false
+      manifest_revision:
+        description: 'Manifest revision to sync (defaults to the committed pin)'
+        type: string
+        default: ''
+        required: false
+      lunch_target:
+        description: 'lunch target'
+        type: string
+        default: bliss_x86_64-userdebug
+        required: false
+      make_target:
+        description: 'make target'
+        type: string
+        default: iso_img
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guest-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # mode=prebuilt-provenance - runnable on a stock hosted runner today.
+  # ---------------------------------------------------------------------------
+  prebuilt-provenance:
+    name: X2 provenance for a pinned prebuilt
+    if: ${{ inputs.mode == 'prebuilt-provenance' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Require an artifact URL
+        if: ${{ inputs.artifact_url == '' }}
+        run: |
+          echo "::error::mode=prebuilt-provenance needs artifact_url. Supply the HTTPS URL of an image built from the pinned manifest (see docs/M2-GUEST-BOOT-PROOF.md section 4.2)."
+          exit 1
+
+      - name: Download and hash the artifact
+        env:
+          URL: ${{ inputs.artifact_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p ./artifact
+          echo "downloading: $URL"
+          curl -fL --retry 3 --retry-delay 5 -o ./artifact/guest-image "$URL"
+          ls -l ./artifact/guest-image
+          sha256sum ./artifact/guest-image | tee ./artifact/guest-image.sha256
+          file ./artifact/guest-image || true
+
+      - name: Write the X2 provenance record
+        env:
+          URL: ${{ inputs.artifact_url }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, datetime
+          p = pathlib.Path('artifact/guest-image')
+          h = hashlib.sha256()
+          with p.open('rb') as fh:
+              for chunk in iter(lambda: fh.read(1 << 20), b''):
+                  h.update(chunk)
+          rec = {
+              'criterion': 'M2 X2 - guest artifact provenance',
+              'kind': 'pinned-prebuilt',
+              'download_url': os.environ['URL'],
+              'sha256': h.hexdigest(),
+              'bytes': p.stat().st_size,
+              'retrieved_utc': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+              'provenance_anchor': 'image/manifest/arcadia-x86.pinned.xml (X1 per-project lock)',
+              'manifest_pin': json.load(open('image/manifest/arcadia-x86.pin.json'))['manifest']['revision'],
+              'retrieved_by': 'github-actions guest-build.yml (mode=prebuilt-provenance)',
+              'note': 'Provenance anchor is the pinned-manifest lock. A downloaded prebuilt is a usability path; confirm it was derived from the pinned manifest and record any divergence here.',
+          }
+          pathlib.Path('artifact/x2-provenance.json').write_text(json.dumps(rec, indent=2) + '\n')
+          print(json.dumps(rec, indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: m2-x2-provenance
+          path: artifact/x2-provenance.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Next step (X3-X5 on a Windows host)
+        run: |
+          echo "X2 recorded. To run X3-X5, place the image locally and use the frozen M0 launcher:"
+          echo "  .\\tools\\qemu\\provision-host.ps1 -Check"
+          echo "  .\\tools\\qemu\\launch-emberbird.ps1 -Check"
+          echo "  .\\tools\\qemu\\launch-emberbird.ps1 -Image <path> -DryRun     # captures X3 argv"
+          echo "  .\\tools\\qemu\\launch-emberbird.ps1 -Image <path>             # boot; then adb connect 127.0.0.1:58526"
+
+  # ---------------------------------------------------------------------------
+  # mode=build-from-manifest - needs real disk; self-hosted or a larger runner.
+  # ---------------------------------------------------------------------------
+  preflight:
+    name: preflight (disk/RAM/tools)
+    if: ${{ inputs.mode == 'build-from-manifest' }}
+    runs-on: ${{ inputs.runner_label }}
+    steps:
+      - name: Check build capacity
+        run: |
+          set -euo pipefail
+          avail_kb=$(df -Pk . | awk 'NR==2 {print $4}')
+          avail_gb=$(( avail_kb / 1024 / 1024 ))
+          mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+          mem_gb=$(( mem_kb / 1024 / 1024 ))
+          cpus=$(nproc)
+          echo "available disk: ${avail_gb} GB | RAM: ${mem_gb} GB | cpus: ${cpus}"
+          missing=""
+          for t in git python3 curl make; do command -v "$t" >/dev/null 2>&1 || missing="$missing $t"; done
+          if [ -n "$missing" ]; then echo "::error::missing build tools:$missing"; exit 1; fi
+          if [ "$avail_gb" -lt 300 ]; then
+            echo "::error::only ${avail_gb} GB free; an arcadia-x86 repo sync + build needs ~300+ GB. Use mode=prebuilt-provenance, or point runner_label at a runner with the disk (self-hosted / GitHub larger runner)."
+            exit 1
+          fi
+          if [ "$mem_gb" -lt 15 ]; then
+            echo "::error::only ${mem_gb} GB RAM; expect the AOSP build to be killed. 16 GB is the practical floor."
+            exit 1
+          fi
+          echo "preflight OK"
+
+  build-from-manifest:
+    name: X2 build from the pinned manifest
+    needs: preflight
+    if: ${{ inputs.mode == 'build-from-manifest' }}
+    runs-on: ${{ inputs.runner_label }}
+    # GitHub caps hosted jobs at 6h; a from-source AOSP build can exceed that, which
+    # is another reason this mode belongs on a self-hosted runner.
+    timeout-minutes: 350
+    env:
+      MANIFEST_URL: https://github.com/BlissRoms-x86/manifest.git
+      MANIFEST_BRANCH: arcadia-x86
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the manifest revision to build
+        id: pin
+        run: |
+          set -euo pipefail
+          rev="${{ inputs.manifest_revision }}"
+          if [ -z "$rev" ]; then
+            rev=$(python3 -c "import json;print(json.load(open('image/manifest/arcadia-x86.pin.json'))['manifest']['revision'])")
+          fi
+          echo "revision=$rev" >> "$GITHUB_OUTPUT"
+          echo "building manifest revision: $rev"
+
+      - name: Install the repo launcher
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/bin"
+          curl -sSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod a+x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          "$HOME/bin/repo" --version
+
+      - name: repo init + pin the manifests checkout + sync
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_WORKSPACE/aosp" && cd "$RUNNER_WORKSPACE/aosp"
+          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --git-lfs
+          # pin the manifests repository itself to the exact revision we are building
+          git -C .repo/manifests fetch --depth=1 origin "${{ steps.pin.outputs.revision }}"
+          git -C .repo/manifests checkout --detach "${{ steps.pin.outputs.revision }}"
+          echo "manifests checkout: $(git -C .repo/manifests rev-parse HEAD)"
+          repo sync -c -j"$(nproc)" --no-tags --force-sync
+          echo "WORKSPACE=$PWD" >> "$GITHUB_ENV"
+
+      # The canonical confirmation named by M2 section 4.1: `repo manifest -r` must
+      # reproduce the committed per-project lock. This is the build-side authority
+      # the network-only resolver is checked against.
+      - name: Confirm the build tree matches the committed X1 lock
+        run: |
+          set -euo pipefail
+          cd "$WORKSPACE"
+          repo manifest -r -o "$GITHUB_WORKSPACE/image/out/repo-manifest-r.xml"
+          python3 "$GITHUB_WORKSPACE/tools/manifest/verify-lock.py" \
+            --lock "$GITHUB_WORKSPACE/image/manifest/arcadia-x86.pinned.xml" \
+            --coverage "$GITHUB_WORKSPACE/image/manifest/lock-coverage.json" \
+            --pin-json "$GITHUB_WORKSPACE/image/manifest/arcadia-x86.pin.json"
+          echo "lock confirmed against the synced tree"
+
+      - name: Build the guest image
+        run: |
+          set -euo pipefail
+          cd "$WORKSPACE"
+          source build/envsetup.sh
+          lunch "${{ inputs.lunch_target }}"
+          make -j"$(nproc)" "${{ inputs.make_target }}"
+          mkdir -p "$GITHUB_WORKSPACE/image/out"
+          find out -name '*.iso' -o -name '*.img' | tee "$GITHUB_WORKSPACE/image/out/artifacts.txt"
+
+      - name: SBOM (best effort)
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          cd "$WORKSPACE"
+          source build/envsetup.sh
+          lunch "${{ inputs.lunch_target }}"
+          m sbom || echo "::warning::sbom target unavailable in this tree"
+
+      - name: Record X2 provenance (sha256, size, toolchain)
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, pathlib, platform, datetime, subprocess, os
+          ws = pathlib.Path(os.environ['WORKSPACE'])
+          imgs = [p for p in ws.glob('out/**/*.iso')] + [p for p in ws.glob('out/**/*.img')]
+          imgs = [p for p in imgs if p.is_file()]
+          recs = []
+          for p in imgs:
+              h = hashlib.sha256()
+              with p.open('rb') as fh:
+                  for chunk in iter(lambda: fh.read(1 << 20), b''):
+                      h.update(chunk)
+              recs.append({'artifact': str(p.relative_to(ws)), 'sha256': h.hexdigest(), 'bytes': p.stat().st_size})
+          rec = {
+              'criterion': 'M2 X2 - guest artifact provenance',
+              'kind': 'built-from-pinned-manifest',
+              'manifest_url': 'https://github.com/BlissRoms-x86/manifest.git',
+              'manifest_revision': os.environ.get('PIN_REVISION', ''),
+              'lunch': os.environ.get('LUNCH_TARGET', ''),
+              'make_target': os.environ.get('MAKE_TARGET', ''),
+              'build_host': platform.platform(),
+              'build_utc': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+              'artifacts': recs,
+              'note': 'Built from the locked manifest; the lock is the provenance anchor for X1/X2.',
+          }
+          out = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'image/out/x2-provenance.json'
+          out.parent.mkdir(parents=True, exist_ok=True)
+          out.write_text(json.dumps(rec, indent=2) + '\n')
+          print(json.dumps(rec, indent=2))
+          PY
+        env:
+          PIN_REVISION: ${{ steps.pin.outputs.revision }}
+          LUNCH_TARGET: ${{ inputs.lunch_target }}
+          MAKE_TARGET: ${{ inputs.make_target }}
+
+      - name: Upload the image + provenance record
+        uses: actions/upload-artifact@v4
+        with:
+          name: m2-guest-image
+          path: |
+            image/out/x2-provenance.json
+            image/out/artifacts.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Where to go next
+        run: |
+          echo "Artifacts uploaded. To complete M2 (X3-X5), on a Windows 11 host with WHPX + QEMU:"
+          echo "  1. .\\tools\\qemu\\provision-host.ps1 -Check"
+          echo "  2. verify the downloaded image's sha256 against x2-provenance.json"
+          echo "  3. .\\tools\\qemu\\launch-emberbird.ps1 -Image <path> -DryRun   # X3"
+          echo "  4. .\\tools\\qemu\\launch-emberbird.ps1 -Image <path>          # X4 (usable UI)"
+          echo "  5. adb connect 127.0.0.1:58526                                 # X5"

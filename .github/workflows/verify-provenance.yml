@@ -1,0 +1,62 @@
+name: verify-provenance
+
+# Guards the EmberbirdOS M2 X1 evidence and the captured upstream manifest.
+#
+# Two things can go wrong with a pinned guest base, and both are silent:
+#   1. the captured upstream manifest under image/manifest/upstream/ gets edited,
+#      so the lock is no longer anchored to a known input; and
+#   2. the lock or the coverage report is hand-edited, or upstream branches move,
+#      so the committed lock no longer describes what would actually be built.
+#
+# This job fails loudly on either. It is network-only and needs no VM, no QEMU and
+# no repo sync, so it runs on a stock GitHub-hosted runner in a couple of minutes.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-provenance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  manifest-lock:
+    name: manifest capture + X1 lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Show the pin under test
+        run: |
+          echo "lock:      image/manifest/arcadia-x86.pinned.xml"
+          echo "pin record: image/manifest/arcadia-x86.pin.json"
+          python3 -c "import json;d=json.load(open('image/manifest/arcadia-x86.pin.json'));print('pinned manifest revision:', d['manifest']['revision'], '(', d['manifest']['branch'], ')')"
+
+      # The captured manifest files are the input the lock was cut from. SHA256SUMS.txt
+      # is stored with CRLF line endings (it was produced on Windows), so strip CR
+      # before handing it to sha256sum - otherwise the filenames gain a trailing \r.
+      - name: Verify the captured upstream manifest hashes
+        working-directory: image/manifest/upstream
+        run: |
+          tr -d '\r' < SHA256SUMS.txt | sha256sum -c -
+
+      - name: Verify the X1 lock (offline structural check)
+        run: python3 tools/manifest/verify-lock.py
+
+      # Canonical equivalence check: re-derive every moving ref from the pinned
+      # manifest over the network, on an empty cache, and require the regenerated
+      # lock to be byte-identical to the committed one. A failure here means either
+      # the lock was corrupted/edited, or upstream moved a branch and the lock must
+      # be re-cut with: python tools/manifest/resolve-manifest-lock.py
+      - name: Verify the X1 lock against a live re-resolution
+        run: python3 tools/manifest/verify-lock.py --live --workers 16

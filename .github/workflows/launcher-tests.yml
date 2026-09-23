@@ -1,0 +1,67 @@
+name: launcher-tests
+
+# Runs the frozen M0 launcher regression suite (tools/qemu/tests/Test-Launcher.ps1)
+# on every change. M0 is ACCEPTED and frozen, and the M2 execution spec forbids
+# modifying the launcher, so this job exists to prove that nothing - including the
+# M2 work around it - has disturbed it.
+#
+# The suite is fully self-contained: it compiles a stub qemu-system-x86_64.exe,
+# stages matched/mismatched OVMF firmware pairs in throwaway directories, and drives
+# the launcher's -Check and -DryRun paths. It needs no QEMU, no OVMF and no
+# hypervisor, which is why it is portable to a hosted Windows runner. It leaves
+# nothing behind outside its own temp workspace and never writes into the repo.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: launcher-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  launcher:
+    name: M0 launcher regression suite
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # Windows PowerShell 5.1, matching the launcher's own #Requires -Version 5.1
+      # and the stub-process model the suite relies on.
+      - name: Run the 17-assertion suite (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          .\tools\qemu\tests\Test-Launcher.ps1
+          if ($LASTEXITCODE -ne 0) { throw "launcher suite failed with exit code $LASTEXITCODE" }
+
+      - name: Confirm the launcher was not left dirty by the suite
+        shell: powershell
+        run: |
+          if (Test-Path .\tools\qemu\OVMF_VARS.local.fd) { throw 'suite wrote OVMF_VARS.local.fd into the repo' }
+          if (Test-Path .\image\out\userdata.qcow2)     { throw 'suite wrote image\out\userdata.qcow2' }
+          Write-Host 'launcher workspace clean'
+
+  provisioner:
+    name: host provisioner parses
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # -Check is read-only (it only probes). Running it here keeps the script from
+      # rotting: it is the tool an operator uses before an M2 boot.
+      - name: Parse and run provision-host.ps1 -Check (read-only)
+        shell: powershell
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD\tools\qemu\provision-host.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors -and $errors.Count) { throw "provision-host.ps1 has $($errors.Count) parse error(s)" }
+          .\tools\qemu\provision-host.ps1 -Check
+          Write-Host "provision-host.ps1 -Check exit code: $LASTEXITCODE (non-zero is expected on a bare runner: QEMU/OVMF are absent)"
+          exit 0
