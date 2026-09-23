@@ -1,0 +1,29 @@
+﻿EmberbirdOS M2 host environment probe
+captured (UTC): 2026-09-23T17:43:57Z
+host: DESKTOP-C993H9Q  os: Microsoft Windows 11 Pro 10.0.26300.0
+
+== tool availability (Get-Command) ==
+  git                    PRESENT  C:\Program Files\Git\cmd\git.exe  git version 2.55.0.windows.5
+  python                 PRESENT  C:\Python314\python.exe  Python 3.14.7
+  qemu-system-x86_64     ABSENT
+  qemu-img               ABSENT
+  adb                    ABSENT
+  wsl                    PRESENT  C:\WINDOWS\system32\wsl.exe  
+  repo                   ABSENT
+  curl                   PRESENT    
+
+== OVMF firmware search (UEFI needed by launcher) ==
+  none found in common locations (OVMF ABSENT)
+
+== hypervisor / WHPX signals ==
+  Win32_ComputerSystem.HypervisorPresent = True
+
+== disk free (system drive) ==
+  C: free 105.0 GB / total 237.4 GB
+
+== interpretation ==
+  git/python/curl present -> X1 (manifest lock) is executable here and WAS executed.
+  qemu-system-x86_64 / qemu-img / OVMF / adb ABSENT -> X3 (resolved argv via frozen launcher),
+  X2 (build/acquire artifact), X4 (usable UI), X5 (ADB liveness) are NOT executable in this
+  environment. Their evidence is NOT fabricated; they require the owner's provisioned host
+  (see tools/qemu/provision-host.ps1). A full AOSP source sync+build cannot run on Windows.

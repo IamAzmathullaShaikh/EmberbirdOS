@@ -1,0 +1,7 @@
+﻿# launch-emberbird.ps1 -Image <placeholder> -DryRun  (resolve QEMU argv only; no VM -> M2 X3)
+# captured (UTC): 2026-09-23T17:45:10Z
+# The image is a 0-byte PLACEHOLDER used ONLY to pass the existence check and reach the
+# QEMU-argv resolution path. No disk image was built or booted. This captures where X3 blocks.
+
+THREW: qemu-system-x86_64.exe not found. Install QEMU or pass -QemuPath. Run -Check for details.
+---- launcher -DryRun exit code: (exception) ----

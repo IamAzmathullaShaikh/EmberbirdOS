@@ -1,0 +1,35 @@
+﻿# launch-emberbird.ps1 -Check  (frozen M0 launcher; read-only host preflight, no VM started)
+# captured (UTC): 2026-09-23T17:45:10Z
+# launcher NOT modified during M2 (M2 spec 4.3). Exit code recorded below.
+
+
+== EmberbirdOS M0 - host readiness check ==
+
+== QEMU ==
+  [FAIL] qemu-system-x86_64.exe not found (install QEMU or pass -QemuPath).
+  [FAIL] qemu-img.exe not found (ships with QEMU).
+
+== Windows Hypervisor Platform (WHPX) ==
+  [OK]   A root hypervisor is running (required by WHPX).
+  [WARN] HypervisorPlatform feature state: Unknown (needs elevation to query). Run elevated to confirm, or: DISM 
+/online /Enable-Feature /FeatureName:HypervisorPlatform /All
+
+== OVMF (UEFI firmware) ==
+  [FAIL] OVMF_CODE.fd not found. Install QEMU firmware or pass -OvmfCode.
+  [FAIL] OVMF_VARS.fd not found. Pass -OvmfVars.
+
+== GPU device support ==
+
+== WSL2 coexistence ==
+  [INFO] WSL2: present
+
+== Anti-cheat note ==
+  [WARN] With WHPX enabled, Windows runs atop the MS hypervisor; some kernel anti-cheat (Vanguard/EAC/BE strict) may 
+refuse to run.
+  [INFO] To fully disable the hypervisor for gaming: bcdedit /set hypervisorlaunchtype off  (reboot). Re-enable: ... 
+auto.
+
+== Result ==
+  NOT READY: 4 blocking item(s) above.
+
+---- launcher -Check exit code: 1  (NOT READY: 4 blocking QEMU+OVMF items expected in this env) ----
