@@ -1,0 +1,76 @@
+EmberbirdOS
+Copyright 2026 The EmberbirdOS contributors.
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+---------------------------------------------------------------------------
+THIRD-PARTY ATTRIBUTION
+---------------------------------------------------------------------------
+
+EmberbirdOS is an independent implementation. Its host and guest source is
+written by this project; it is *informed by* the design of other projects but
+contains none of their source. The components below are either depended upon,
+built alongside this project, or distributed with the guest image, and are
+attributed here as their licenses require.
+
+The authoritative long-form analysis is docs/LICENSING.md. A complete,
+per-component THIRD_PARTY.md and machine-readable SBOM are generated at image
+build time (the guest build runs `m sbom` where the tree supports it); this file
+is the human-readable root attribution.
+
+  Android Open Source Project (AOSP)
+    License: Apache License 2.0
+    The guest platform base. EmberbirdOS's guest-side components (HALs,
+    hwcomposer, gralloc bridge, NativeBridge wiring, SystemUI adapters) are
+    built against and link into AOSP-derived trees.
+
+  BlissOS / BlissRoms-x86 and the Android-Generic Project (AGP)
+    License: AOSP-derived (Apache-2.0 core); bundled kernel and some components
+    under GPL-2.0 and other per-component licenses
+    The v1 guest base (BlissOS `arcadia-x86`). The guest image is built from a
+    pinned manifest (image/manifest/arcadia-x86.pinned.xml) rather than
+    redistributed as an opaque blob, so per-component obligations are met by
+    publishing the build recipe and manifest. GPL-2.0 components are isolated
+    inside the guest image and are not linked into EmberbirdOS's host code.
+
+  AOSP Berberis (binary translation framework)
+    License: Apache License 2.0
+    Upstream provides a RISC-V to x86_64 translator only. ARM/arm64 translation
+    is NOT provided upstream and is an optional, user-supplied layer, never
+    bundled - see docs/M1-RUNTIME-ARCHITECTURE.md section 5.
+
+  Mesa, gfxstream (Graphics Streaming Kit), ANGLE, SwiftShader
+    Licenses: MIT / Apache-2.0 / BSD-style, per component
+    The graphics stack on both sides of the VM boundary: the guest ICD and the
+    host backend. The SwiftShader software renderer is the current baseline;
+    GPU-accelerated gfxstream is the target path behind the GRFX-GATE-01 gate.
+
+  QEMU
+    License: GPL-2.0
+    The VMM EmberbirdOS invokes. It is an external tool driven over its command
+    line and is NOT linked into, or redistributed as part of, EmberbirdOS's
+    Apache-2.0 source. Users obtain or bundle it separately, which is what keeps
+    the combined-work licensing boundary intact (docs/LICENSING.md).
+
+  bytehook (bhook) and shadowhook
+    License: MIT
+    Optional guest-side instrumentation and compatibility shims. Not part of the
+    production render path.
+
+  OpenSSL 3.x and BoringSSL
+    License: Apache License 2.0
+    Cryptography used by host and guest components.
+
+  Proprietary translators - libhoudini (Intel), libndk_translation (Google)
+    License: Proprietary. NOT DISTRIBUTED BY THIS PROJECT.
+    ARM translation is an optional capability a user may install at runtime, in
+    the same posture as Google Apps: never in source control, never bundled,
+    always user-supplied with an in-product notice.
+
+---------------------------------------------------------------------------
+Trademarks
+---------------------------------------------------------------------------
+Android is a trademark of Google LLC. Windows, Hyper-V and the Windows
+Subsystem for Android are trademarks of Microsoft Corporation. All other
+trademarks are the property of their respective owners. This project is not
+affiliated with, endorsed by, or sponsored by any of them.
