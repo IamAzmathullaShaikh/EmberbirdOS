@@ -1,0 +1,108 @@
+# M2 X2 - remote build launch: observed evidence
+# Captured 2026-09-24 on DESKTOP-C993H9Q (Windows 11 Pro 10.0.26300), from a checkout of
+# github.com/IamAzmathullaShaikh/EmberbirdOS.
+#
+# This file records what the launch attempt actually produced. X2 is NOT closed by this
+# file: no artifact exists, so no hash is claimed. It exists so the blocker is a measured
+# fact rather than a guess.
+#
+# Client: ~/.crave/bin/crave.exe (stub, 18419416 bytes, 2026-07-20) + extracted payload
+#         0.2-7220/crave-windows/crave.exe (18404368 bytes) reporting 0.2-7214-HEAD.
+
+=== 1. Client self-update loop (blocked the first attempt) =====================
+# A plain `crave <cmd>` before any work; measured 107 s and 2 x 28 MB.
+
+  Downloading update https://github.com/accupara/crave/releases/download/0.2-7220/crave-windows-0.2-7220-Windows.zip
+  Extracting zip: C:\Users\<user>\.crave\bin\0.2-7220
+  Downloading update .../0.2-7220/crave-windows-0.2-7220-Windows.zip      <- the payload re-downloads itself
+  Error: Generic failure: [WinError 183] Cannot create a file when that file already exists:
+    'C:\Users\BANGER~1\AppData\Local\Temp\crave-0.2-7220.zip_unverified' -> '...\crave-0.2-7220.zip'
+  Deleting the zip file so that it is re-downloaded the next time around
+  Download failed continuing to use current crave
+  crave 0.2-7214-HEAD Windows/x64 (run from .crave\bin\0.2-7220\crave-windows\crave.exe)
+
+# Aftermath: staged leftovers that keep it reproducible
+#   %TEMP%\crave-0.2-7220.zip_unverified          28645095 bytes
+#   ~/.crave/bin/0.2-7220/crave-windows/0.2-7220/ (nested re-extraction)
+# With the documented global -n/--noUpdate switch the same calls return in seconds.
+# Fix + full analysis: ../../CRAVE-CLIENT-UPDATE-LOOP.md, tools/crave/crave.sh
+
+=== 2. Project resolution ======================================================
+# crave resolves the project from the git URL of the CURRENT DIRECTORY.
+
+  cwd = this repository:
+    Error: could not get project information for C:\Users\...\Desktop\Projects\EmberbirdOS
+    (also with --projectID 36 on the command line, and with crave.yaml present)
+
+  cwd = a checkout whose origin is https://github.com/accupara/los20.git:
+    project resolved as "LOS 20" (id 36)  -> job submitted
+
+# So no Crave project is created for this repo; the job runs from a throwaway ticket
+# checkout and bootstraps this repository inside the remote workspace.
+#   tools/crave/run-remote-build.sh
+
+=== 3. Platform acceptance for project 36 (LOS 20) =============================
+# Probe: trivial command, --no-patch, --no-artifacts, sequential.
+
+  linux16        t2d-standard-16   ACCEPTED     Waiting for build id:301688 to start...
+  linux4         n2d-standard-4    ACCEPTED     Waiting for build id:301691 to start...
+  bain-debug     n2d-standard-16   ACCEPTED     Waiting for build id:301692 to start...
+  linux32        e2-standard-32    REJECTED     Error: Invalid platform for project.
+  linux64        n1-standard-96   REJECTED     Error: Invalid platform for project.
+  linux-all      e2-standard-8    REJECTED     Error: Invalid platform for project.
+  linux-t2d-32   t2d-standard-32  REJECTED     Error: Invalid platform for project.
+  devspace       n2d-custom-4...  REJECTED     Error: Invalid platform for project.
+  aosp-silver    t2d-standard-16  BROKEN       Error: Cannot read properties of null (reading 'details')
+
+=== 4. The build job ==========================================================
+# tools/crave/crave.sh run --projectID 36 --platform linux16 --detached --json
+#   --no-artifacts --no-patch --message "M2 X2: EmberbirdOS guest from pinned X1 manifest lock"
+#   -- "bash -lc '... git clone <repo> eb; cd eb; WORKSPACE=$(pwd)/emberbird-aosp bash
+#                tools/guest-build/build-from-manifest.sh'"
+# Recipe commit pinned in the job: 609ad8b (master), then c8034cb for the tooling.
+
+  {
+    "jobid": 301689,
+    "url": "https://foss.crave.io/app/#/build/info/301689?team=14",
+    "project": "LOS 20",
+    "status": "queued"
+  }
+
+# State sampled over ~14 minutes: unchanged.
+
+  02:19:52  301689  LOS 20  queued
+  02:23:24  301689  LOS 20  queued
+  02:24:29  301689  LOS 20  queued
+  02:25:32  301689  LOS 20  queued
+  02:26:39  301689  LOS 20  queued
+
+  crave getlog -> "Waiting for build job 301689 to run" (repeating)
+
+=== 5. Compute allocation on this account =====================================
+# crave list, "Configured Platforms" column "Tokens Per Second".
+
+  linux4        n2d-standard-4          linuxaosp   0
+  linux16       t2d-standard-16         linuxaosp   0     <- the platform the build needs
+  linux32       e2-standard-32          linux32     0
+  linux64       n1-standard-96          linux64     0
+  windows       e2-standard-4           windows     0
+  devspace      n2d-custom-4-65536-ext  devspace    0
+  linux-all     e2-standard-8          linux-all    0
+  bain-debug    n2d-standard-16         linuxaosp   0
+  aosp-silver   t2d-standard-16         linuxaosp   16    <- only non-zero; submission fails
+  linux-t2d-32  t2d-standard-32         linux-t2d-32 0
+
+  crave wallet transactions -> "No transactions found for this user."
+
+# No job ever left the queue, and only the platform that cannot be submitted shows a
+# non-zero token rate. That is consistent with a compute/token allocation gate on the
+# account, which is an owner-side action and not something this repository can change.
+
+=== 6. Consequence ============================================================
+# X2 stays OPEN. No artifact, no SHA-256, no pull. The launch path itself is proven up to
+# the queue: client fixed, project resolved, platform accepted, job accepted, workspace
+# named. What is missing is compute.
+#
+# When the job runs:  bash tools/crave/run-remote-build.sh status | log | pull
+# Then re-hash the image locally, compare against image/out/x2-provenance.json, and commit
+# the record as docs/evidence/M2/x2-artifact-provenance.json.
