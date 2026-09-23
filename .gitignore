@@ -1,0 +1,90 @@
+# ---- EmberbirdOS .gitignore ----
+
+# Cloned reference repositories (each has its own VCS history; large; not ours to redistribute)
+research/_clones/
+
+
+# Guest OS images & VM artifacts (large binaries; never committed — built or downloaded)
+*.iso
+*.img
+*.vhd
+*.vhdx
+*.qcow2
+*.raw
+*.efi.fd
+OVMF*.fd
+image/build/
+image/out/
+guest-image/
+*.sfs
+*.squashfs
+
+# Proprietary ARM translators — NEVER commit (user-supplied at runtime)
+**/libhoudini/**
+**/houdini/**
+**/libndk_translation/**
+*.houdini
+
+# Rust (host/)
+target/
+**/target/
+Cargo.lock.bak
+*.pdb
+
+# Android / AOSP build output
+guest/**/out/
+*.apk
+*.aab
+!tests/apks/**/*.apk
+*.dex
+*.odex
+local.properties
+
+# Native build
+build/
+cmake-build-*/
+*.o
+*.a
+*.so
+*.dll
+*.dylib
+*.exe
+!tools/**/*.ps1
+
+# Node / packaging tooling (if used for installer)
+node_modules/
+dist/
+*.msix
+*.msixbundle
+
+# Logs, temp, captures
+*.log
+*.tmp
+*.pcap
+captures/
+screenshots/
+!docs/**/*.png
+
+# Python bytecode caches (tools/manifest/*.py)
+__pycache__/
+*.pyc
+
+# Editor / agent-local configuration (not project content)
+.claude/
+.freebuff/
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Secrets — never commit
+*.pem
+*.key
+*.keystore
+*.jks
+.env
+.env.*
+secrets/
