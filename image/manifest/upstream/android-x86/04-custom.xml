@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+  <!-- Initrd & installer -->
+  <project path="bootable/aaropa" name="BlissOS/bootable_aaropa" remote="ghub" revision="arcadia-x86" />
+
+  <!-- Device tree -->
+  <project path="device/generic/common" name="device_generic_common" remote="BR-x86" revision="arcadia-x86" sync-s="true" />
+  <project path="device/generic/x86_64" name="platform_device_generic_x86_64" remote="BR-x86" revision="arcadia-x86" />
+  <project path="device/generic/x86" name="platform_device_generic_x86" remote="BR-x86" revision="arcadia-x86" />
+
+</manifest>

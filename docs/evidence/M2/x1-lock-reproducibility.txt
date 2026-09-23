@@ -1,0 +1,85 @@
+EmberbirdOS M2 - X1 manifest-lock reproducibility evidence
+captured (UTC): 2026-09-24
+host: DESKTOP-C993H9Q  os: Microsoft Windows 11 Pro 10.0.26300.0  python: 3.14.7  git: 2.55.0.windows.5
+
+PURPOSE
+  X1 (per-project manifest lock) was produced by tools/manifest/resolve-manifest-lock.py.
+  The tool's source had been lost while its outputs remained committed, so the lock was
+  not reproducible. The tool was restored from its own recovered bytecode interface and
+  then used to re-derive the lock from scratch, on a fresh cache, purely over the network
+  (no repo sync, no multi-GB source tree). This file records that re-derivation.
+
+WHAT WAS RUN
+  1) offline classification (no network):
+       python tools/manifest/resolve-manifest-lock.py --offline --upstream-dir upstream \
+         --out-xml <scratch>/offline.xml --out-coverage <scratch>/offline-coverage.json
+  2) full re-resolution on an EMPTY checkpoint (297 live `git ls-remote` calls, 24 workers):
+       python tools/manifest/resolve-manifest-lock.py --workers 24 --timeout 45 --retries 4 \
+         --out-xml image/out/lock-verify/rerun.xml \
+         --out-coverage image/out/lock-verify/rerun-coverage.json \
+         --checkpoint image/out/lock-verify/rerun-ckpt.json
+  (<scratch> = image/out/lock-verify/, which is git-ignored - no artifact here is committed.)
+
+RESULT 1 - classification agrees exactly with the committed lock
+
+  parsed 1183 projects (19 remotes) from image/manifest/upstream/default.xml
+    already immutable: 886 ; moving refs to resolve: 297
+  == lock coverage ==
+    projects             1183
+    already_locked_tag   882
+    already_locked_sha   4
+    resolved             297
+    unresolved           0
+  LOCK COMPLETE (every project immutable)
+
+  Committed totals in image/manifest/lock-coverage.json are identical:
+    {"projects": 1183, "already_locked_tag": 882, "already_locked_sha": 4, "resolved": 297, "unresolved": 0}
+
+  All 297 live ls-remote resolutions succeeded with zero errors; 297 distinct SHAs; the
+  re-derived SHAs are identical to the committed locked_revision values. So the lock's
+  *substance* - every one of the 1183 project revisions - reproduces exactly.
+
+RESULT 2 - the emitted lock is byte-identical
+
+  cmp image/manifest/arcadia-x86.pinned.xml image/out/lock-verify/rerun3.xml
+    -> IDENTICAL (byte-for-byte, 1209 lines, CRLF)
+
+  This is the X1 artifact `repo manifest -r` is equivalent to. A re-lock against an
+  unchanged upstream is therefore a no-op, and any future drift shows up as a real diff.
+
+RESULT 3 - one documented, cosmetic variance in lock-coverage.json
+
+  The per-project report differs from the committed copy in exactly 8 of 1183 projects,
+  and only in the `resolved_ref` field's *form* - never in a SHA, revision, url, or byte
+  of the lock:
+
+    platform_external_pdfium                 committed 'arcadia-next'   re-run 'refs/heads/arcadia-next'
+    android_external_rsync                   committed 'lineage-19.1'   re-run 'refs/heads/lineage-19.1'
+    android_external_tinycompress            committed 'lineage-19.1'   re-run 'refs/heads/lineage-19.1'
+    android_hardware_qcom_audio              committed 'lineage-19.1'   re-run 'refs/heads/lineage-19.1'
+    android_hardware_qcom_media              committed 'lineage-19.1-caf-sm8350'  re-run 'refs/heads/lineage-19.1-caf-sm8350'
+    android_hardware_qcom_data_ipacfg-mgr    committed 'lineage-19.1'   re-run 'refs/heads/lineage-19.1'
+    platform_system_bt                       committed 'arcadia-x86'    re-run 'refs/heads/arcadia-x86'
+    platform_system_core                     committed 'arcadia-x86'    re-run 'refs/heads/arcadia-x86'
+
+  Cause, established by inspecting the committed cache: .lock-checkpoint.json holds BOTH
+  forms - 14 of its 297 entries record a bare ref name and 283 record 'refs/heads/...'.
+  The committed coverage report inherited whichever form its cache happened to hold, i.e.
+  it is the product of a checkpoint written across more than one resolution pass. A single
+  clean re-run (this one) is internally consistent and always records the resolved full
+  ref. Reproducing the committed file byte-for-byte would therefore require reproducing a
+  mixed-history cache, which is neither meaningful nor desirable.
+
+  Independent confirmation that the underlying refs are real - for one of the 8,
+  `git ls-remote https://github.com/BlissRoms-x86/platform_system_core refs/heads/arcadia-x86`
+  returns e50022c6676a0252555b6cd885130569eeda3bf6, which is exactly the committed SHA.
+
+WHAT THIS DOES AND DOES NOT ESTABLISH
+  DOES: X1 is reproducible. The lock generator exists in-tree, runs from the pinned
+        manifest capture with no source sync, and re-derives the committed lock exactly.
+  DOES: the lock is deterministic and byte-stable, so CI can diff it (see
+        .github/workflows/verify-provenance.yml).
+  DOES NOT: replace the canonical `repo sync && repo manifest -r` confirmation at build
+        time, which remains the M2 build-side authority (docs/M2-GUEST-BOOT-PROOF.md 4.1).
+  DOES NOT: constitute X2-X5. No guest artifact was built or downloaded, no VM was booted,
+        and no ADB liveness was observed. See docs/evidence/M2/env-probe.txt.

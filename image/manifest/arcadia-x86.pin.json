@@ -1,0 +1,50 @@
+{
+  "$schema_note": "EmberbirdOS guest-base pinned-manifest evidence record. Machine-readable anchor for the review-M1 exit criterion #1 (a specific arcadia-x86 manifest SHA recorded in image/manifest/). Human-readable companion: image/manifest/README.md.",
+  "guest_base": {
+    "distribution": "BlissOS arcadia-x86",
+    "release_line": "Bliss OS 16.x",
+    "android_version": "Android 13 (API 33)"
+  },
+  "manifest": {
+    "repo_url": "https://github.com/BlissRoms-x86/manifest.git",
+    "branch": "arcadia-x86",
+    "is_repo_default_head": true,
+    "revision": "98a0a79cfffbb2cb9eb43dbaf5575a0195162bcf",
+    "revision_short": "98a0a79"
+  },
+  "head_commit": {
+    "sha": "98a0a79cfffbb2cb9eb43dbaf5575a0195162bcf",
+    "committed_utc": "2026-04-12T16:56:54Z",
+    "author_login": "hmtheboy154",
+    "subject": "x86: Update media-driver to 25.4"
+  },
+  "resolution": {
+    "retrieved_utc": "2026-09-23",
+    "methods": [
+      "git ls-remote https://github.com/BlissRoms-x86/manifest.git  (refs/heads/arcadia-x86 == HEAD == 98a0a79cfffbb2cb9eb43dbaf5575a0195162bcf)",
+      "GitHub commits API /repos/BlissRoms-x86/manifest/commits/98a0a79cfffbb2cb9eb43dbaf5575a0195162bcf  (committer date + subject)"
+    ],
+    "no_build_performed": true,
+    "note": "The manifest tree was NOT synced and NO Android image was built. Only the manifest-repository ref was resolved to a commit SHA (a read-only network query)."
+  },
+  "scope": {
+    "what_this_pins": "The BlissRoms-x86/manifest repository at the exact commit its arcadia-x86 branch pointed to on 2026-04-12 (branch head, and the repo's default HEAD, as observed 2026-09-23).",
+    "what_this_does_NOT_pin": "The per-project component revisions. The default manifest at this commit still references many component projects by branch/tag rather than by SHA. A fully-resolved, per-project revision lock is produced at M2 build time via `repo manifest -r -o pinned.xml` after `repo sync`, and will be committed alongside this file as arcadia-x86.pinned.xml.",
+    "deferred_to": "M2 (Guest Boot Proof) — repo sync + `repo manifest -r` full per-project revision lock."
+  },
+  "gsi_plan_b": {
+    "target": "AOSP aosp_x86_64 GSI (Android 16)",
+    "status": "Plan-B, DOWNGRADED to a bring-up build effort — NOT a drop-in image (plain GSI hits signal-6/FirstStageMount in vanilla QEMU; needs the AGP boot layer + -cpu host). Tracked as the clean-license rebase target in the M6 band.",
+    "reference": "docs/M1-RUNTIME-ARCHITECTURE.md #2"
+  },
+  "build_variant": {
+    "selected": "foss / vanilla (no bundled Google APKs)",
+    "reason": "GMS-free by default; GApps user-supplied. See docs/M1-RUNTIME-ARCHITECTURE.md #6."
+  },
+  "references": {
+    "guest_base_decision": "docs/M1-RUNTIME-ARCHITECTURE.md #2",
+    "kernel_decision": "docs/M1-RUNTIME-ARCHITECTURE.md #3",
+    "licensing": "docs/LICENSING.md #4",
+    "guest_patches_live_at": "image/patches/ (against this manifest revision)"
+  }
+}
