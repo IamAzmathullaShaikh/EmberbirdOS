@@ -118,7 +118,7 @@ log "X2 provenance record"
 cd "$REPO_ROOT"
 MANIFEST_REVISION="$MANIFEST_REVISION" LUNCH_TARGET="$LUNCH_TARGET" MAKE_TARGET="$MAKE_TARGET" \
 PYTHONPATH="$REPO_ROOT" python3 - "$WORKSPACE" "$OUT_DIR" <<'PY'
-import datetime, hashlib, json, os, pathlib, platform, sys
+import datetime, hashlib, json, os, pathlib, platform, shutil, sys
 
 ws, out_dir = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 imgs = sorted(p for p in list(ws.glob('out/**/*.iso')) + list(ws.glob('out/**/*.img')) if p.is_file())
@@ -130,6 +130,13 @@ for p in imgs:
             h.update(chunk)
     records.append({'artifact': p.name, 'sha256': h.hexdigest(), 'bytes': p.stat().st_size})
     print('  %s  %s  %d bytes' % (h.hexdigest(), p.name, p.stat().st_size))
+    # The image lives deep in the AOSP out/ tree. Copy it next to the provenance
+    # record so a single `crave pull image/out/` retrieves the artifact and its hash
+    # together - the build host is ephemeral from the operator's point of view.
+    dest = out_dir / p.name
+    if not dest.exists() or dest.stat().st_size != p.stat().st_size:
+        print('  copying -> %s' % dest)
+        shutil.copy2(p, dest)
 
 rec = {
     'criterion': 'M2 X2 - guest artifact provenance',
