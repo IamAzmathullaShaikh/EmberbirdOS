@@ -1,0 +1,65 @@
+EmberbirdOS M2 - X2 guest-artifact availability check
+checked (UTC): 2026-09-24
+host: DESKTOP-C993H9Q  os: Microsoft Windows 11 Pro 10.0.26300  disk free: ~104 GB
+
+WHY THIS CHECK EXISTS
+  M2 section 4.2 allows two routes to the X2 artifact: build it from the locked
+  manifest, or acquire a prebuilt "derived from the same manifest" and record its
+  URL + SHA-256 + build provenance. Because a from-source build needs ~300+ GB and
+  this host has ~104 GB, the prebuilt route was the intended path. This file records
+  what that route actually offers - checked against the upstream sources rather than
+  assumed - and it is the reason the plan converges back on the build.
+
+WHAT WAS CHECKED, AND WHAT THE SOURCES SAY
+
+  1. Official site - https://blissos.org/   (HTTP 200, checked 2026-09-24)
+     Title/description and body, verbatim:
+       "Bliss OS is still under development. Public images are paused. The source is
+        not. New installer, kernels, and trees are landing."
+     There is no download link or image offered on the official page.
+
+  2. Official GitHub org - https://github.com/BlissOS   (HTTP 200)
+       "This is the new place for BlissOS 16 and above. For older version, check out
+        the old organization here: https://github.com/BlissRoms-x86"
+       "Downloads - If you are looking for download links, go to our website:
+        https://blissos.org/"
+       "BlissOS 16 source (based on Android 13)"
+     So the org that owns BlissOS 16.x directs all downloads to the paused site, and
+     its published artefacts are *source* trees, not images. Note this matches the M1
+     finding that the project reorged under BlissLabs - the manifest we pinned is
+     still live (verified: refs/heads/arcadia-x86 == 98a0a79cfffbb2cb9eb43dbaf5575a0195162bcf),
+     but the *binary* distribution channel is dormant.
+
+  3. Third-party mirror - https://sourceforge.net/projects/blissos-x86/files/
+     Latest published file: "Bliss-Surface-v14.10.3-x86_64-OFFICIAL-foss-20241013.iso
+     (2.0 GB)", modified 2024-10-13; the project lists only an "Official" and an "OTA"
+     folder. v14.x is an Android 11-era line - years older than the pinned
+     arcadia-x86 revision (2026-04-12). It is not derived from this manifest.
+
+CONCLUSION (X2 stays OPEN - this check did not close it)
+  There is currently NO prebuilt that can honestly be recorded as X2 evidence:
+    * the official channel is paused, so no signed image with build provenance exists;
+    * the only mirror carries an Android-11-era image that is demonstrably not built
+      from the pinned manifest.
+  Recording the mirror image as X2 would mean asserting a provenance that cannot be
+  substantiated - precisely the overclaim M2 X7 forbids. So nothing was downloaded and
+  no hash is claimed.
+
+  (Confidence: [H] for the two official statements and the mirror's file listing - all
+  read first-party on 2026-09-24. Point-in-time: if BlissOS resumes publishing images,
+  this check should be repeated, and the prebuilt route reopens.)
+
+WHAT REMAINS AVAILABLE FOR X2
+  a) Build from the locked manifest - `mode=build-from-manifest` in
+     .github/workflows/guest-build.yml - on a runner with the disk for it (self-hosted
+     or a GitHub larger runner). This is the provenance anchor M2 prefers anyway, and
+     it re-confirms the committed X1 lock with `repo manifest -r` before building.
+     It is the only route that yields a verifiable "built from THIS lock" claim.
+  b) An operator-supplied artifact the owner has reason to trust (their own build, or a
+     specific image they accept). It can be recorded via `mode=prebuilt-provenance`,
+     which captures URL + SHA-256 + size + retrieval time; the image's divergence from
+     the pinned manifest must be recorded alongside it, because the lock - not the
+     download - is the provenance anchor.
+  c) Unrelated to X2's artifact, but it unblocks X3 independently: provisioning QEMU +
+     OVMF on this host allows the frozen launcher's -DryRun to resolve and capture the
+     exact boot argv. That needs no guest image and is available immediately.
