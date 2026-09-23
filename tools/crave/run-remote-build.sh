@@ -20,8 +20,14 @@
 #   bash tools/crave/run-remote-build.sh run      # launch (default), detached
 #   bash tools/crave/run-remote-build.sh status   # queue state + tail of the log
 #   bash tools/crave/run-remote-build.sh log      # full remote log
+#   bash tools/crave/run-remote-build.sh watch    # poll until the job runs, then pull
 #   bash tools/crave/run-remote-build.sh pull     # fetch image/out/* back into this repo
 #   bash tools/crave/run-remote-build.sh stop     # stop the job on this workspace
+#
+# `watch` exists because a job can sit queued for a long time when the account has no
+# compute allocation for the platform (observed 2026-09-24: 0 tokens/sec on linux16), and
+# a multi-hour sync+build follows even once it starts. It polls, records the state, and
+# pulls the artifact the moment the job reports success - see WATCH_INTERVAL.
 #
 # TUNABLES (env)
 #   CRAVE_PROJECT_ID     default 36 (LOS 20 - Crave's Android 13 AOSP base)
@@ -32,6 +38,8 @@
 #   COMMIT               default: current HEAD of this checkout (pinned into the job)
 #   TICKET_DIR           default $TEMP/crave-ticket-<project id>
 #   ATTACH=1             stream the build in the foreground instead of detaching
+#   JOB                  job id to watch (default: read from image/out/crave-job.txt)
+#   WATCH_INTERVAL       seconds between polls in `watch` mode (default 300)
 #
 # Everything goes through tools/crave/crave.sh, so the client's broken self-update path
 # (docs/CRAVE-CLIENT-UPDATE-LOOP.md) is never entered.
@@ -162,5 +170,42 @@ case "$cmd" in
     ( cd "$TICKET_DIR" && bash "$CRAVE_SHIM" stop --force )
     ;;
 
-  *) die "unknown command '$cmd' (run|status|log|pull|stop)" ;;
+  watch)
+    # Crave reports the outcome only in the job log, so completion is "the job is no
+    # longer queued or running": then the log decides between success and failure, and a
+    # success is followed straight through to the pull.
+    ensure_ticket >/dev/null
+    JOB="${JOB:-}"
+    if [ -z "$JOB" ] && [ -f "$REPO_ROOT/image/out/crave-job.txt" ]; then
+      JOB="$(python3 - "$REPO_ROOT/image/out/crave-job.txt" <<'PY' 2>/dev/null || true
+import json, re, sys
+raw = open(sys.argv[1]).read()
+m = re.search(r'"jobid"\s*:\s*(\d+)', raw) or re.search(r'(\d{4,})', raw)
+print(m.group(1) if m else '', end='')
+PY
+)"
+    fi
+    [ -n "$JOB" ] || die "no job id: set JOB=<id>, or run 'run' first so image/out/crave-job.txt exists"
+    interval="${WATCH_INTERVAL:-300}"
+    log "watching job $JOB every ${interval}s"
+    while :; do
+      state="$( cd "$TICKET_DIR" && bash "$CRAVE_SHIM" list 2>/dev/null | tr -d '\r' | awk -v j="$JOB" '$1==j {print $4}' )"
+      last="$( cd "$TICKET_DIR" && timeout 60 bash "$CRAVE_SHIM" getlog 2>/dev/null | tr -d '\r' | tail -1 )"
+      printf '%s  job=%s  state=%s  | %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$JOB" "${state:-finished}" "$last"
+      if [ -z "$state" ]; then
+        log "job $JOB left the queue - capturing the remote log"
+        ( cd "$TICKET_DIR" && bash "$CRAVE_SHIM" getlog ) > "$REPO_ROOT/image/out/crave-remote-log.txt" 2>&1 || true
+        if grep -qi 'build successful' "$REPO_ROOT/image/out/crave-remote-log.txt"; then
+          log "remote build reported success - pulling the artifact and the X2 record"
+          bash "$REPO_ROOT/tools/crave/run-remote-build.sh" pull
+        else
+          die "job $JOB ended without 'Build Successful'; see image/out/crave-remote-log.txt"
+        fi
+        break
+      fi
+      sleep "$interval"
+    done
+    ;;
+
+  *) die "unknown command '$cmd' (run|status|log|watch|pull|stop)" ;;
 esac

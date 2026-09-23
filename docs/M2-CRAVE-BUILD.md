@@ -80,6 +80,11 @@ bash tools/crave/run-remote-build.sh run
 bash tools/crave/run-remote-build.sh status
 bash tools/crave/run-remote-build.sh log
 
+# leave a watcher running: it polls until the job reports success, then pulls the
+# artifact and the X2 record by itself (a queued job plus a multi-hour build makes
+# "check back later" the normal case, not the exception)
+bash tools/crave/run-remote-build.sh watch
+
 # pull back only the small results, into image/out/
 bash tools/crave/run-remote-build.sh pull
 ```
