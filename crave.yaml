@@ -1,0 +1,45 @@
+# Crave project registration for EmberbirdOS.
+#
+# WHY THIS FILE EXISTS
+#   `crave` guesses which project configuration to use from the git URL of the current
+#   directory. This repository's own URL matches no Crave project, so a bare `crave run`
+#   here fails with "could not find matching projects for <our url>". This file tells the
+#   client which project to use instead, so every command in docs/M2-CRAVE-BUILD.md works
+#   from a plain checkout with no per-invocation flags:
+#
+#     bash tools/crave/crave.sh run --platform linux64 --no-patch --detached -- "<cmd>"
+#
+#   Crave does not require this file to be committed to take effect, but committing it is
+#   what makes the remote build reproducible for anyone who clones the repo - the same
+#   reason the build recipe itself lives in the tree.
+#
+# WHY "LOS 20"
+#   The pinned manifest (image/manifest/arcadia-x86.pin.json) is Bliss's arcadia-x86 tree
+#   on an Android 13 platform base, and LOS 20 is Crave's Android 13 AOSP project - so its
+#   build image and default disk/RAM provisioning are the right shape for this build. It is
+#   used only as a *container*: the build syncs the pinned manifest itself inside the run,
+#   so nothing here changes what gets built or which revision it comes from. The X1 lock
+#   remains the provenance anchor.
+#
+# WHERE IT MUST LIVE
+#   At the top of the repository for a simple git checkout (Crave also accepts it at
+#   .repo/manifests/crave.yaml for repo-based trees).
+#
+# Reference: https://foss.crave.io/docs/crave-usage/ (Customizing build configuration)
+
+settings:
+  # Default project(s) for this repository. Overridable per call with --projectID.
+  # LOS 20 = project id 36. Confirm with: bash tools/crave/crave.sh list
+  projects:
+    - LOS 20
+
+"LOS 20":
+  # Reuse one workspace across machines. Without this, each client hostname gets its own
+  # workspace, which throws away the container/pull cache when builds move between hosts.
+  ignoreClientHostname: true
+
+  # Never upload this repository as a patch onto the base project. It cannot be one: it is
+  # not the manifest project and it is not a child of it. The build bootstraps the source
+  # tree itself, so patch generation is pure overhead - and it would be misleading, since
+  # the artifact's provenance is the X1 lock, not a patch against LOS 20.
+  no-patch: true

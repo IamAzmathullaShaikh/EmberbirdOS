@@ -16,3 +16,14 @@ image/manifest/.lock-checkpoint.json -text
 
 # Captured command transcripts / byte-level evidence: preserve exactly as observed.
 docs/evidence/** -text
+
+# Scripts and workflow definitions EXECUTE on Linux - the Crave remote build clones this
+# repository and runs tools/guest-build/build-from-manifest.sh on the build machine, and
+# GitHub Actions runs the workflows on Linux. A CRLF would be carried into the shebang line
+# and every `if`/`then` token, and bash would fail with things like
+# "$'\r': command not found". Force LF for anything a shell or the workflow runner reads,
+# regardless of the local core.autocrlf setting.
+*.sh  text eol=lf
+*.py  text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

@@ -8,8 +8,16 @@
 > the platform the Android ROM community uses for exactly this — and only the small
 > results come back: the image plus its X2 provenance record.
 >
-> **This is a runbook, not a result.** Nothing in M2 has been built yet. The recipe and
-> the instructions below are committed; the run itself needs your Crave account.
+> **This is a runbook, and it has been executed — but it is still not a result.** On
+> 2026-09-24 the remote build was launched against the owner's Crave account
+> (job **301689**, project `LOS 20` id 36, platform `linux16`
+> <https://foss.crave.io/app/#/build/info/301689?team=14>). It is recorded as **queued**, and
+> as of this writing it has not run: the account shows **0 tokens/sec on `linux16`**, which is
+> the platform's allocation gate. The launch path is therefore proven end to end up to the
+> queue, and X2 stays OPEN until an artifact comes back, is re-hashed locally and is
+> recorded under `docs/evidence/M2/`. See
+> [Executed 2026-09-24](#executed-2026-09-24-what-the-run-actually-required) for the exact
+> findings, including the client defect that blocked the first attempt.
 
 ## What runs where
 
@@ -36,28 +44,64 @@ runs on any runner with the disk, so the Crave path and the CI path cannot drift
    it in the working directory or any parent, then in `$HOME`, or you can point at it
    with `-c`. Store it as `~/crave.conf` — **never** commit it (`.gitignore` does not
    need to cover it if it lives in `$HOME`; do not copy it into the tree).
-3. **Configure the project once, in the Crave UI.** Crave maps a project to a source
-   URL; create one whose source URL is this repository's GitHub URL, and grant yourself
-   access. That is what lets `crave run` clone *this* repo onto the build machine.
-        - Until the push in this milestone lands, that URL does not exist yet — the
-          project cannot be created before the repo is on GitHub. Do this after.
+3. **No Crave project is needed for this repository — do not create one.** Crave resolves
+   the project from the **git URL of the current directory**, so running `crave run` from a
+   checkout of this repo fails with `could not get project information for <this repo>`
+   (passing `--projectID` does not help; the client still wants a local project identity).
+   `crave.yaml` alone does not lift that either.
+
+   The job is therefore launched from a throwaway **ticket checkout** whose origin *is* the
+   base project's source URL — `tools/crave/run-remote-build.sh` creates it under
+   `$TEMP/crave-ticket-36` and the job bootstraps this repository inside the remote
+   workspace at the exact commit you are standing on. A Crave project is never created, and
+   none is needed: the base project is a **container**, and M2's provenance anchor remains
+   the X1 lock.
+
+   Which container, and why: the pinned manifest is Bliss's `arcadia-x86` on an Android 13
+   base, so the base project is `LOS 20` (id **36**, <https://github.com/accupara/los20.git>),
+   Crave's Android 13 AOSP project. `crave.yaml` in this repo pins that choice plus two
+   overrides (`ignoreClientHostname`, `no-patch`) and is copied into the ticket by the
+   launcher, because Crave only reads `crave.yaml` from the tree it is run in.
+
+   **Platform:** project 36 accepts `linux16` (`t2d-standard-16`) and refuses `linux32`,
+   `linux64`, `linux-all` and `linux-t2d-32` with `Invalid platform for project`.
+   `aosp-silver` fails differently (`Cannot read properties of null (reading 'details')`).
+   So the platform is not a free choice — see the probe matrix below.
 
 ## The build
 
 From a checkout of this repository:
 
 ```sh
-# remote build: sync at the pinned revision, verify the X1 lock, build, hash
-crave run --no-patch -- "bash tools/guest-build/build-from-manifest.sh"
+# launch (detached) - creates/refreshes the ticket, pins this exact commit, prints the job
+bash tools/crave/run-remote-build.sh run
 
-# pull back only the small results
-crave pull image/out/
+# watch it / read the whole remote log
+bash tools/crave/run-remote-build.sh status
+bash tools/crave/run-remote-build.sh log
+
+# pull back only the small results, into image/out/
+bash tools/crave/run-remote-build.sh pull
 ```
 
-`--no-patch` builds the committed revision as-is instead of uploading your local
-diff — which is what we want, because X2 must describe **the pinned manifest**, not a
-working tree. The first run pays for the full `repo sync`; Crave caches build trees and
-compiler output, so later runs are much cheaper.
+The launcher does three things that are not optional, and explains why in its header:
+
+1. it runs the job from a **ticket checkout** whose origin is the base project's URL (the
+   only way `crave run` resolves a project for this repo), and copies `crave.yaml` into it;
+2. it pins the job to the **exact commit** you are on, so a later push cannot silently
+   change what was built;
+3. it goes through `tools/crave/crave.sh`, which always passes the client's `-n` flag and
+   clears the poisoned update state — otherwise every Crave call costs 107 s and 2 x 28 MB
+   before it does anything ([CRAVE-CLIENT-UPDATE-LOOP.md](CRAVE-CLIENT-UPDATE-LOOP.md)).
+
+`--no-patch` is implicit in the launcher: it builds the committed revision as-is instead of
+uploading your local diff, which is what we want, because X2 must describe **the pinned
+manifest**, not a working tree. The first run pays for the full `repo sync`; Crave caches
+build trees and compiler output, so later runs are much cheaper.
+
+Inside the remote job, `WORKSPACE` is set to `$(pwd)/emberbird-aosp` — that is, onto the
+workspace volume that Crave provisions for the build, not onto `$HOME`. The X2 record and
+the image land in `eb/image/out/` for a single `pull`.
 
 Prefer a persistent environment? Enter a devspace and run the same script inside it:
 
@@ -76,7 +120,7 @@ Overridable environment variables (set them inside the `crave run` command strin
 | `MAKE_TARGET` | `iso_img` |
 | `MANIFEST_URL` / `MANIFEST_BRANCH` | `https://github.com/BlissRoms-x86/manifest.git` / `arcadia-x86` |
 | `MANIFEST_REVISION` | read from [`image/manifest/arcadia-x86.pin.json`](../image/manifest/arcadia-x86.pin.json) |
-| `WORKSPACE` | `$HOME/emberbird-build/aosp` |
+| `WORKSPACE` | `$HOME/emberbird-build/aosp` (the Crave launcher overrides it to `<workspace>/emberbird-aosp`) |
 | `JOBS` / `SYNC_JOBS` | `nproc` |
 
 ## What you should see, and what to check before trusting it
@@ -106,11 +150,50 @@ On pull-back:
    adb connect 127.0.0.1:58526                               # X5: liveness
    ```
 
+## Executed 2026-09-24: what the run actually required
+
+Everything here was learned by executing it, not by reading the docs.
+
+**1. The client was unusable until patched around.** Every invocation of the bundled
+Windows client re-downloaded a 28 MB update it could never apply, failed with `WinError
+183`, and fell back after ~107 s — so `crave run` looked like a hang with no output. Root
+cause, reproduction and fix: [CRAVE-CLIENT-UPDATE-LOOP.md](CRAVE-CLIENT-UPDATE-LOOP.md)
+(`tools/crave/crave.sh`).
+
+**2. `crave run` needs a local checkout of the project's source, not just a project id.**
+`--projectID 36` from this repo still failed on `could not get project information`; the
+same command from a `los20` checkout resolved project 36 immediately. Hence the ticket
+checkout in the launcher.
+
+**3. Platform availability is per project, and narrow.** Probe results for project 36:
+
+| Platform | Instance | Result |
+|---|---|---|
+| `linux16` | `t2d-standard-16` | **accepted** — job queued |
+| `linux32` | `e2-standard-32` | `Invalid platform for project` |
+| `linux64` | `n1-standard-96` | `Invalid platform for project` |
+| `linux-all` | `e2-standard-8` | `Invalid platform for project` |
+| `linux-t2d-32` | `t2d-standard-32` | `Invalid platform for project` |
+| `aosp-silver` | `t2d-standard-16` | `Cannot read properties of null (reading 'details')` |
+
+**4. Compute is token-gated, and this account has none of it on `linux16`.** `crave list`
+reports `Tokens Per Second` per platform: **0** for `linux16` (and every platform except
+`aosp-silver`, which shows 16). Two jobs launched on `linux16` — the probe (301688, since
+stopped) and the build (301689) — both sat in state `queued`, with the log repeating
+`Waiting for build job <id> to run`. This is an account/allocation matter, not a repo
+defect: **X2 cannot complete until compute is granted** (accrued tokens, an allocation, or a
+platform that is funded). Nothing in the repository changes that, and the queue state is
+recorded here rather than being papered over.
+
+**5. Nothing was built, so nothing is claimed.** No artifact, no hash, no boot. X2 remains
+OPEN; when a job does run, `pull` brings back `x2-provenance.json` plus the image, the local
+re-hash is compared against the record, and only then is the M2 appendix row filled in.
+
 ## Honest limitations
 
-- **Not executed here.** A Crave run needs your account, an API key and a configured
-  project; this repo therefore commits the recipe, the runbook and the verification
-  steps, and records X2 as OPEN rather than pretending otherwise.
+- **Launched, not completed.** A Crave run needs your account, an API key and compute; the
+  job is queued on the owner's account (see the execution section above) and X2 is recorded
+  as OPEN rather than pretending otherwise.
 - **Crave is a third-party service.** It sees the source it builds. Nothing secret lives
   in this repo; the proprietary ARM translators and GApps are explicitly never committed
   (see [../docs/LICENSING.md](LICENSING.md)), so there is nothing in the tree that
