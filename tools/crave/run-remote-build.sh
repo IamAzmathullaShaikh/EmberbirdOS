@@ -187,10 +187,30 @@ PY
     fi
     [ -n "$JOB" ] || die "no job id: set JOB=<id>, or run 'run' first so image/out/crave-job.txt exists"
     interval="${WATCH_INTERVAL:-300}"
+    # A long wait must not be ended by one flaky poll: under `set -e` a non-zero result
+    # from either probe would abort the whole watch silently, which is exactly how an
+    # artifact gets missed. Both readers are therefore total - they swallow failure and
+    # report "unknown" instead, and the loop keeps its own count of consecutive failures.
+    read_state() {
+      ( cd "$TICKET_DIR" && bash "$CRAVE_SHIM" list 2>/dev/null | tr -d '\r' | awk -v j="$JOB" '$1==j {print $4}' ) || true
+    }
+    read_last() {
+      ( cd "$TICKET_DIR" && timeout 90 bash "$CRAVE_SHIM" getlog 2>/dev/null | tr -d '\r' | tail -1 ) || true
+    }
+    misses=0
     log "watching job $JOB every ${interval}s"
     while :; do
-      state="$( cd "$TICKET_DIR" && bash "$CRAVE_SHIM" list 2>/dev/null | tr -d '\r' | awk -v j="$JOB" '$1==j {print $4}' )"
-      last="$( cd "$TICKET_DIR" && timeout 60 bash "$CRAVE_SHIM" getlog 2>/dev/null | tr -d '\r' | tail -1 )"
+      state="$(read_state)"
+      last="$(read_last)"
+      if [ -z "$state" ] && [ -z "$last" ]; then
+        misses=$(( misses + 1 ))
+        printf '%s  job=%s  state=unknown  (no answer from the client; miss %s)\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$JOB" "$misses"
+        [ "$misses" -lt 10 ] || die "the client answered nothing 10 times in a row - giving up rather than reporting a false completion"
+        sleep "$interval"
+        continue
+      fi
+      misses=0
       printf '%s  job=%s  state=%s  | %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$JOB" "${state:-finished}" "$last"
       if [ -z "$state" ]; then
         log "job $JOB left the queue - capturing the remote log"
