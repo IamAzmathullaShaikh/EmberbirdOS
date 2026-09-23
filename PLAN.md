@@ -401,7 +401,7 @@ The combined-work license is the single biggest legal constraint; it drives the 
 | **Mesa / gfxstream / ANGLE / SwiftShader** | MIT/Apache-2.0/BSD-ish | Graphics stack (guest ICD / host backend) | Attribution |
 | **libhoudini / libndk_translation** | Proprietary (Intel/Google) | **Never in source control**; user supplies at runtime | No redistribution; runtime-optional plugin path only |
 | **OpenSSL 3.x / BoringSSL** | Apache-2.0 / OpenSSL-3 (Apache-2.0) | Crypto | Attribution |
-| **EmberbirdOS host+guest source** | **Apache-2.0** (proposed) | Our code | Keeps us permissive and clear of GPL-3 (independent reimplementation, no droidloom source) |
+| **EmberbirdOS host+guest source** | **Apache-2.0** (adopted — [`LICENSE`](LICENSE) + [`NOTICE`](NOTICE)) | Our code | Keeps us permissive and clear of GPL-3 (independent reimplementation, no droidloom source) |
 
 **Distribution shape:** ship (a) our Apache-2.0 host+guest source, (b) a **build recipe + signed image** for the guest rather than a monolithic blob where per-component licenses require it, (c) QEMU as a separately-obtained/bundled GPL-2 tool invoked over its CLI, (d) proprietary translators strictly as a user-supplied runtime drop-in with an in-product notice. A full `NOTICE`/`THIRD_PARTY.md` is generated at build time. **`docs/LICENSING.md`** carries the authoritative long-form analysis.
 
@@ -456,7 +456,7 @@ These are deliberately deferred to the milestone where evidence appears — not 
 
 **▶ M2 in execution — the remaining, host/runner-dependent work:**
 
-9. **M2 X2 (guest artifact)** — build from the locked manifest on a runner with ~300+ GB free ([`guest-build.yml`](.github/workflows/guest-build.yml), `mode=build-from-manifest`), or record the provenance of a pinned prebuilt (`mode=prebuilt-provenance`). The local machine has ~104 GB free, which is why the build moves to CI.
+9. **M2 X2 (guest artifact)** — build from the locked manifest with the one shared recipe [`tools/guest-build/build-from-manifest.sh`](tools/guest-build/build-from-manifest.sh), executed **remotely on Crave** ([`docs/M2-CRAVE-BUILD.md`](docs/M2-CRAVE-BUILD.md)) or on a big-disk runner ([`guest-build.yml`](.github/workflows/guest-build.yml), `mode=build-from-manifest`). The local machine has ~104 GB free against ~300+ GB needed, so the build happens off-machine — and **no provenance-usable prebuilt exists to shortcut it** ([`docs/evidence/M2/x2-artifact-availability.txt`](docs/evidence/M2/x2-artifact-availability.txt)).
 10. **M2 X3–X5 (boot, usable UI, ADB liveness)** — provision QEMU + OVMF on the Windows host ([`tools/qemu/provision-host.ps1`](tools/qemu/provision-host.ps1) `-InstallQemu` / `-FetchPlatformTools`), then boot the X2 artifact with the frozen `launch-emberbird.ps1` and capture the `sys.boot_completed=1` + `adb devices` evidence. **Blocked on that host provisioning** — see the M2 execution appendix.
 11. **Then M3 (Graphics Proof)** — resolve `GRFX-GATE-01` (custom EmberbirdOS-QEMU-Windows vs. crosvm-on-Windows) on isolated hardware.
 12. **Then the feature roadmap** — virtio-net + ADB + `emberbirdctl` skeleton (Rust) and onward, milestone-by-milestone per [§8](#8-phased-roadmap--milestones), each gated on its exit test, nothing left half-wired.

@@ -78,7 +78,8 @@ Build the `arcadia-x86` target from the locked manifest, **or** acquire the pinn
 
 ## 5. Evidence artifacts (where they land at execution time)
 
-- `image/manifest/arcadia-x86.pinned.xml` — the per-project revision lock (**X1**).
+- `image/manifest/arcadia-x86.pinned.xml` — the per-project revision lock (**X1**) — complete, plus [`evidence/M2/x1-lock-reproducibility.txt`](evidence/M2/x1-lock-reproducibility.txt).
+- `docs/evidence/M2/x2-artifact-provenance.json` — the **X2** record emitted by the remote build ([`M2-CRAVE-BUILD.md`](M2-CRAVE-BUILD.md) §"What you should see").
 - `docs/evidence/M2/` — boot command + resolved argv, screenshots, `adb`/`getprop` transcripts, failure/recovery log, artifact hashes (**X2–X6**).
 - An execution-time appendix appended to **this** file summarizing X1–X7 with observed values.
 
@@ -108,7 +109,7 @@ Observed values for X1–X7 at the close of this execution pass. Host: `DESKTOP-
 | # | Criterion | Status | Observed |
 |---|---|---|---|
 | **X1** | Per-project manifest lock resolved and recorded | ✅ **COMPLETE** | [`../image/manifest/arcadia-x86.pinned.xml`](../image/manifest/arcadia-x86.pinned.xml) — **1183 projects, 0 unresolved** (882 locked by AOSP tag, 4 by SHA, 297 moving refs resolved to SHAs). Coverage: [`../image/manifest/lock-coverage.json`](../image/manifest/lock-coverage.json). **Re-derivation is byte-identical** to the committed lock — [`evidence/M2/x1-lock-reproducibility.txt`](evidence/M2/x1-lock-reproducibility.txt). |
-| **X2** | Guest artifact provenance (path + SHA-256 + size + build host, or URL + SHA-256 + provenance) | ⬜ **OPEN** | Not built and not downloaded. The from-source build needs ~300+ GB free; this host has ~104 GB, so the build moves to CI: [`.github/workflows/guest-build.yml`](../.github/workflows/guest-build.yml). **The prebuilt alternative was checked and is currently unavailable** — the official channel is paused and the only mirror is Android-11-era — so X2 converges on `mode=build-from-manifest` on a runner with the disk (see [`evidence/M2/x2-artifact-availability.txt`](evidence/M2/x2-artifact-availability.txt)). No hash is claimed because no artifact exists. |
+| **X2** | Guest artifact provenance (path + SHA-256 + size + build host, or URL + SHA-256 + provenance) | ⬜ **OPEN** | Not built and not downloaded. The from-source build needs ~300+ GB free; this host has ~104 GB. **The prebuilt alternative was checked and is currently unavailable** — the official channel is paused and the only mirror is Android-11-era — so X2 converges on a real build from the lock: **remotely on Crave** ([`M2-CRAVE-BUILD.md`](M2-CRAVE-BUILD.md), the chosen path) or on any big-disk runner via [`.github/workflows/guest-build.yml`](../.github/workflows/guest-build.yml). Both execute the one recipe [`../tools/guest-build/build-from-manifest.sh`](../tools/guest-build/build-from-manifest.sh), which re-confirms the X1 lock before building. No hash is claimed because no artifact exists yet. |
 | **X3** | Exact boot recipe (launcher invocation + resolved QEMU argv via `-DryRun`) | ⛔ **BLOCKED** | The frozen launcher resolves no argv on this host: `qemu-system-x86_64.exe not found` ([`evidence/M2/launcher-dryrun.txt`](evidence/M2/launcher-dryrun.txt)). QEMU/OVMF are absent ([`evidence/M2/env-probe.txt`](evidence/M2/env-probe.txt)). Unblocked by [`../tools/qemu/provision-host.ps1`](../tools/qemu/provision-host.ps1) `-InstallQemu`; **the launcher itself stays unmodified** (§4.3). |
 | **X4** | Usable UI reached (screenshot/console + `sys.boot_completed==1`) | ⬜ **OPEN** | Requires X2 + X3. No VM was booted. |
 | **X5** | ADB liveness (`adb devices`; `ro.build.version.release==13`, `sdk==33`) | ⬜ **OPEN** | Requires X4. Host prerequisite improved since the original probe: `adb` is now present at `C:\Users\BangerSoul\bin\adb.exe`. |
@@ -146,7 +147,7 @@ So the AOSP half of this manifest is pinned at **12L**, not Android 13 — and t
 
 **X2 → X3 → X4 → X5 cannot complete without two host/runner actions that are the owner's to make:**
 
-1. **A build runner** with ~300+ GB free, to produce the X2 image, **or** an operator-supplied image the owner has reason to trust (whose divergence from the pin is recorded). The prebuilt shortcut is *not* currently available from upstream: BlissOS's official images are paused and the only public mirror carries an Android-11-era build ([`evidence/M2/x2-artifact-availability.txt`](evidence/M2/x2-artifact-availability.txt)). This is the local-storage constraint that motivates building through CI.
+1. **Execute the remote build** — the recipe and runbook are committed ([`../tools/guest-build/build-from-manifest.sh`](../tools/guest-build/build-from-manifest.sh), [`M2-CRAVE-BUILD.md`](M2-CRAVE-BUILD.md)), but the run itself needs the owner's Crave account and a Crave project pointing at this repository, so it has not been executed. `crave run --no-patch -- "bash tools/guest-build/build-from-manifest.sh"` → `crave pull image/out/`. The prebuilt shortcut is *not* available from upstream: BlissOS's official images are paused and the only public mirror carries an Android-11-era build ([`evidence/M2/x2-artifact-availability.txt`](evidence/M2/x2-artifact-availability.txt)). This is the local-storage constraint that motivates building remotely.
 2. **QEMU + OVMF on this Windows host**, to execute X3–X5 (`provision-host.ps1 -InstallQemu`; UAC prompt is the operator's call). Until then, X3 is blocked exactly as `evidence/M2/launcher-dryrun.txt` records, and no boot claim is made.
 
 ## Related
