@@ -1,0 +1,18 @@
+# Line-ending policy for EmberbirdOS.
+#
+# Several files here are DIGEST INPUTS, not merely readable text: the M2 X1 lock
+# and its coverage report are compared byte-for-byte by tools/manifest/verify-lock.py,
+# and image/manifest/upstream/SHA256SUMS.txt records sha256 digests taken over the
+# captured manifest files exactly as they were fetched. Under the default Windows
+# setting (core.autocrlf=true) git stores CRLF content as LF in the blob, so a Linux
+# checkout would materialise different bytes than the ones the digests describe - the
+# provenance check would then fail on CI for a reason that has nothing to do with
+# provenance. These paths therefore opt out of EOL conversion and are stored verbatim.
+
+image/manifest/upstream/** -text
+image/manifest/arcadia-x86.pinned.xml -text
+image/manifest/lock-coverage.json -text
+image/manifest/.lock-checkpoint.json -text
+
+# Captured command transcripts / byte-level evidence: preserve exactly as observed.
+docs/evidence/** -text
