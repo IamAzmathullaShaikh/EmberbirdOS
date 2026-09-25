@@ -50,12 +50,35 @@ die() { printf '\n\033[1;31mFATAL: %s\033[0m\n' "$*" >&2; exit 1; }
 log "preflight"
 command -v git    >/dev/null || die "git is required"
 command -v python3 >/dev/null || die "python3 is required"
-avail_kb="$(df -Pk "$REPO_ROOT" | awk 'NR==2 {print $4}')"
+
+# Two things the old preflight got wrong:
+#   1. It measured df on $REPO_ROOT (the small EmberbirdOS checkout), but the sync +
+#      build land in $WORKSPACE. On Crave those share one device, so it passed by luck;
+#      on a split-disk runner it would clear the gate then run out of space mid-build.
+#      Measure the filesystem the build actually writes to.
+#   2. It always demanded the COLD floor (~250 GB for a from-scratch checkout + build).
+#      Crave (and any warm runner) PRE-SEEDS the AOSP tree: $WORKSPACE already owns a
+#      .repo, so the sync is INCREMENTAL and only needs headroom for the delta + out/,
+#      not a second full ~300 GB checkout. That mismatch is exactly what failed job
+#      301901: the node had 204 GB free on a tree already holding 132 GB, and the cold
+#      floor rejected a perfectly buildable node. Gate on incremental headroom when a
+#      pre-seeded .repo exists; keep the full floor for a cold runner.
+mkdir -p "$WORKSPACE"
+if [ -e "$WORKSPACE/.repo" ]; then
+  seeded="pre-seeded tree (incremental sync + build)"
+  disk_floor_gb="${DISK_FLOOR_GB:-120}"
+else
+  seeded="cold runner (full sync + build)"
+  disk_floor_gb="${DISK_FLOOR_GB:-250}"
+fi
+avail_kb="$(df -Pk "$WORKSPACE" | awk 'NR==2 {print $4}')"
 avail_gb=$(( avail_kb / 1024 / 1024 ))
 mem_gb=$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1024 / 1024 ))
-printf 'disk free: %s GB | RAM: %s GB | jobs: %s\n' "$avail_gb" "$mem_gb" "$JOBS"
-if [ "$avail_gb" -lt 250 ]; then
-  die "only ${avail_gb} GB free; a repo sync + build needs ~300 GB. Use Crave (docs/M2-CRAVE-BUILD.md) or a runner with the disk."
+printf 'workspace: %s\n' "$WORKSPACE"
+printf 'mode: %s | disk floor: %s GB\n' "$seeded" "$disk_floor_gb"
+printf 'disk free (on workspace fs): %s GB | RAM: %s GB | jobs: %s\n' "$avail_gb" "$mem_gb" "$JOBS"
+if [ "$avail_gb" -lt "$disk_floor_gb" ]; then
+  die "only ${avail_gb} GB free on ${WORKSPACE} (${seeded} needs ~${disk_floor_gb} GB). Use Crave (docs/M2-CRAVE-BUILD.md) or a runner with the disk."
 fi
 if [ "$mem_gb" -lt 15 ]; then
   die "only ${mem_gb} GB RAM; the AOSP build expects 16 GB+."
@@ -79,8 +102,26 @@ if [ -z "${SKIP_SYNC:-}" ]; then
   log "repo init + pin manifests to the X1 revision"
   mkdir -p "$WORKSPACE"
   cd "$WORKSPACE"
-  # --git-lfs matches the recorded M1 build recipe; -c keeps it to the current branch.
-  repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --git-lfs
+  # `repo` searches UPWARD for an existing .repo. If WORKSPACE sits under another
+  # checkout's root, repo silently "reuses" that root while every relative .repo/...
+  # path below resolves against WORKSPACE - which dies with
+  #   fatal: cannot change to '.repo/manifests': No such file or directory
+  # Crave states the rule plainly (crave/rules.md): "Do not make a folder and sync
+  # inside that to avoid conflicts". On Crave the sync root IS the job workspace, so
+  # WORKSPACE must be that root - not a subfolder created under it.
+  if [ ! -e "$WORKSPACE/.repo" ]; then
+    ancestor=""
+    d="$(pwd)"
+    while :; do
+      d="$(dirname "$d")"
+      [ "$d" != "/" ] || break
+      if [ -e "$d/.repo" ]; then ancestor="$d"; break; fi
+    done
+    [ -z "$ancestor" ] || die "WORKSPACE=$WORKSPACE is nested under an existing repo checkout ($ancestor/.repo); repo would walk up and sync/reuse the wrong tree. Set WORKSPACE to a checkout root (on Crave: the job's own \$PWD), never a subfolder of one."
+  fi
+  # --git-lfs matches the recorded M1 build recipe. --depth=1 is Crave's documented
+  # rule (crave/rules.md: "use --depth 1 on repo init to lessen syncing time").
+  repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --git-lfs --depth=1
   git -C .repo/manifests fetch --depth=1 origin "$MANIFEST_REVISION"
   git -C .repo/manifests checkout --detach "$MANIFEST_REVISION"
   pinned_manifests="$(git -C .repo/manifests rev-parse HEAD)"
@@ -88,8 +129,21 @@ if [ -z "${SKIP_SYNC:-}" ]; then
   [ "$pinned_manifests" = "$MANIFEST_REVISION" ] \
     || die "manifests checkout is $pinned_manifests, expected $MANIFEST_REVISION"
 
-  log "repo sync (this is the multi-hour, multi-hundred-GB step)"
-  repo sync -c -j"$SYNC_JOBS" --no-tags --force-sync
+  # Crave ships a conflict-tolerant sync and its docs strongly prefer it over raw
+  # `repo sync` (crave/getting-started/building-crave-run.md): "We strongly suggest
+  # using /opt/crave/resync.sh ... since resync automatically handles conflicts".
+  # It resolves paths relative to the repo root, which is why WORKSPACE must be one.
+  # It is absent off-Crave (local/CI), where the plain sync below still applies.
+  if [ -x /opt/crave/resync.sh ]; then
+    log "repo sync via /opt/crave/resync.sh (Crave conflict-tolerant sync; multi-hundred-GB step)"
+    /opt/crave/resync.sh || {
+      log "resync.sh returned non-zero - falling back to a plain repo sync"
+      repo sync -c -j"$SYNC_JOBS" --no-tags --force-sync
+    }
+  else
+    log "repo sync (this is the multi-hour, multi-hundred-GB step)"
+    repo sync -c -j"$SYNC_JOBS" --no-tags --force-sync
+  fi
 
   log "canonical check: repo manifest -r against the committed X1 lock"
   repo manifest -r -o "$OUT_DIR/repo-manifest-r.xml"

@@ -24,10 +24,10 @@
 #   bash tools/crave/run-remote-build.sh pull     # fetch image/out/* back into this repo
 #   bash tools/crave/run-remote-build.sh stop     # stop the job on this workspace
 #
-# `watch` exists because a job can sit queued for a long time when the account has no
-# compute allocation for the platform (observed 2026-09-24: 0 tokens/sec on linux16), and
-# a multi-hour sync+build follows even once it starts. It polls, records the state, and
-# pulls the artifact the moment the job reports success - see WATCH_INTERVAL.
+# `watch` exists because a free-queue job can sit `queued` for a long time waiting for a
+# build node (observed 2026-09-24 on linux16 - the free queue costs no tokens, it is just
+# a wait for capacity), and a multi-hour sync+build follows even once it starts. It polls,
+# records the state, and pulls the artifact the moment the job reports success - see WATCH_INTERVAL.
 #
 # TUNABLES (env)
 #   CRAVE_PROJECT_ID     default 36 (LOS 20 - Crave's Android 13 AOSP base)
@@ -36,10 +36,22 @@
 #   CRAVE_PLATFORM       default linux16  (the only capable platform project 36 accepts;
 #                                          see docs/M2-CRAVE-BUILD.md for the probe matrix)
 #   COMMIT               default: current HEAD of this checkout (pinned into the job)
-#   TICKET_DIR           default $TEMP/crave-ticket-<project id>
+#   TICKET_DIR           default $TEMP/crave-ticket-<project name slug>  (e.g. "LOS 20"
+#                        -> crave-ticket-los20). Keyed to the PROJECT, not a bare id, and
+#                        stable per project so the client's Workspace-Dir-derived build
+#                        cache is not silently reset between runs (more-info.md lists
+#                        Workspace Dir as one of the 4 things that reset build storage).
 #   ATTACH=1             stream the build in the foreground instead of detaching
 #   JOB                  job id to watch (default: read from image/out/crave-job.txt)
 #   WATCH_INTERVAL       seconds between polls in `watch` mode (default 300)
+#
+# WORKSPACE SCOPING (observed 2026-09-24): the client resolves getlog/pull against the
+# CURRENT DIRECTORY's workspace, and that resolution returned "No running job found on
+# this workspace" even when run from the job's own registered ticket dir while `list`
+# still showed the job queued. So every log/artifact access in `watch`/`pull`/`log` is
+# PINNED with an explicit --jobID/--job (resolved from $JOB or image/out/crave-job.txt),
+# which the client honors regardless of cwd. TICKET_DIR still matters for `pull` (it is
+# the local staging root the remote eb/image/out/ lands in before the copy into the repo).
 #
 # Everything goes through tools/crave/crave.sh, so the client's broken self-update path
 # (docs/CRAVE-CLIENT-UPDATE-LOOP.md) is never entered.
@@ -53,10 +65,30 @@ CRAVE_PROJECT_ID="${CRAVE_PROJECT_ID:-36}"
 CRAVE_PROJECT_NAME="${CRAVE_PROJECT_NAME:-LOS 20}"
 CRAVE_PROJECT_URL="${CRAVE_PROJECT_URL:-https://github.com/accupara/los20.git}"
 CRAVE_PLATFORM="${CRAVE_PLATFORM:-linux16}"
-TICKET_DIR="${TICKET_DIR:-${TEMP:-${TMPDIR:-/tmp}}/crave-ticket-${CRAVE_PROJECT_ID}}"
+# Ticket dir keyed to the project NAME (slug), not the bare id: prior real runs used
+# crave-ticket-los20 while the id-based default was crave-ticket-36, and that drift alone
+# resets the build cache. A slug is stable per project and moves WITH a project switch
+# (a different project has a different Project UUID, so its cache is separate anyway).
+project_slug() { printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9'; }
+TICKET_SLUG="$(project_slug "$CRAVE_PROJECT_NAME")"
+[ -n "$TICKET_SLUG" ] || TICKET_SLUG="id${CRAVE_PROJECT_ID}"
+TICKET_DIR="${TICKET_DIR:-${TEMP:-${TMPDIR:-/tmp}}/crave-ticket-${TICKET_SLUG}}"
 
 log() { printf '\n\033[1;36m== %s\033[0m\n' "$*"; }
 die() { printf '\033[1;31mFATAL: %s\033[0m\n' "$*" >&2; exit 1; }
+
+# The job id every getlog/pull is pinned with: explicit $JOB wins, else the record the
+# `run` command wrote (image/out/crave-job.txt). Empty output means "unknown".
+job_record() {
+  if [ -n "${JOB:-}" ]; then printf '%s' "$JOB"; return; fi
+  [ -f "$REPO_ROOT/image/out/crave-job.txt" ] || return 0
+  python3 - "$REPO_ROOT/image/out/crave-job.txt" <<'PY' 2>/dev/null || true
+import json, re, sys
+raw = open(sys.argv[1]).read()
+m = re.search(r'"jobid"\s*:\s*(\d+)', raw) or re.search(r'(\d{4,})', raw)
+print(m.group(1) if m else '', end='')
+PY
+}
 
 [ -f "$CRAVE_SHIM" ] || die "missing $CRAVE_SHIM"
 
@@ -81,10 +113,92 @@ ensure_ticket() {
     rm -rf "$TICKET_DIR"
     git clone --depth=1 -q "$CRAVE_PROJECT_URL" "$TICKET_DIR"
   fi
-  # crave.yaml must live at the top of the tree the client runs in for its project
-  # overrides (ignoreClientHostname, no-patch) to apply to this job.
-  cp -f "$REPO_ROOT/crave.yaml" "$TICKET_DIR/crave.yaml" 2>/dev/null || true
+  install_project_yaml
   printf 'ticket origin: %s\n' "$(git -C "$TICKET_DIR" remote get-url origin)"
+}
+
+# crave.yaml install - do NOT blindly clobber the base project's own file.
+#
+# Three problems the old `cp -f crave.yaml` had:
+#   1. It overwrote whatever crave.yaml the base project ships (a real risk: its config
+#      keys env:/image:/push: for the *build node*, which we must not silently discard).
+#   2. Our file is keyed by project NAME ("LOS 20"). Crave matches the block by the
+#      dashboard project name, so on a project switch (e.g. --projectID 93 = LOS 22.1)
+#      the "LOS 20" block never applies and the ignoreClientHostname/no-patch overrides
+#      vanish with no warning - exactly what happened on the 301767 run.
+#   3. more-info.md: for repo-based trees the file's real home is
+#      [Workspace Dir]/.repo/manifests/crave.yaml, not the checkout top.
+#
+# So: (a) fail loudly if our overrides are not keyed to the project we are launching, and
+# (b) MERGE our keys into the base project's file (preserving its own top-level keys and
+# any per-project block) rather than overwriting it, writing to whichever location the
+# tree actually uses (.repo/manifests if present, else the top).
+install_project_yaml() {
+  local ours="$REPO_ROOT/crave.yaml"
+  [ -f "$ours" ] || { printf 'note: no repo crave.yaml to install (skipping)\n'; return 0; }
+
+  # Guard: our overrides must be keyed to the project name we are actually launching.
+  # A silent name/id mismatch is what drops the overrides on a project switch.
+  if ! python3 - "$ours" "$CRAVE_PROJECT_NAME" <<'PY'
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[0+1], encoding='utf-8')) or {}
+name = sys.argv[2]
+sys.exit(0 if isinstance(doc, dict) and name in doc else 1)
+PY
+  then
+    die "crave.yaml has no '$CRAVE_PROJECT_NAME' block - its overrides would silently not apply to project $CRAVE_PROJECT_ID. Set CRAVE_PROJECT_NAME to match a keyed block, or add one to $ours."
+  fi
+
+  # Destination: repo-based trees keep it under .repo/manifests (more-info.md); a plain
+  # manifest/source checkout keeps it at the top.
+  local dest="$TICKET_DIR/crave.yaml"
+  [ -d "$TICKET_DIR/.repo/manifests" ] && dest="$TICKET_DIR/.repo/manifests/crave.yaml"
+
+  # Merge (never clobber): base file's keys are the floor; ours win only on the keys we
+  # actually set (settings.projects + our per-project block). Anything the base project
+  # defines that we don't touch is preserved verbatim.
+  python3 - "$ours" "$dest" "$CRAVE_PROJECT_NAME" <<'PY'
+import sys, os, yaml
+
+ours_path, dest_path, project = sys.argv[1], sys.argv[2], sys.argv[3]
+ours = yaml.safe_load(open(ours_path, encoding='utf-8')) or {}
+base = {}
+if os.path.exists(dest_path):
+    base = yaml.safe_load(open(dest_path, encoding='utf-8')) or {}
+if not isinstance(base, dict):
+    base = {}
+
+merged = dict(base)
+
+# settings.projects: union, preserving base order then appending ours.
+ours_settings = (ours.get('settings') or {}) if isinstance(ours.get('settings'), dict) else {}
+base_settings = (merged.get('settings') or {}) if isinstance(merged.get('settings'), dict) else {}
+our_projects = ours_settings.get('projects') or []
+base_projects = base_settings.get('projects') or []
+seen, projects = set(), []
+for p in list(base_projects) + list(our_projects):
+    if p not in seen:
+        seen.add(p); projects.append(p)
+if projects:
+    merged_settings = dict(base_settings)
+    merged_settings['projects'] = projects
+    merged['settings'] = merged_settings
+
+# Our per-project override block wins for the keys we set, but merges over any block the
+# base project already defines for the same name (so base's own keys survive).
+if project in ours and isinstance(ours[project], dict):
+    block = dict(merged.get(project) or {}) if isinstance(merged.get(project), dict) else {}
+    block.update(ours[project])
+    merged[project] = block
+
+os.makedirs(os.path.dirname(dest_path) or '.', exist_ok=True)
+with open(dest_path, 'w', encoding='utf-8', newline='\n') as f:
+    if base:
+        f.write('# MERGED by tools/crave/run-remote-build.sh: base project keys preserved,\n')
+        f.write('# EmberbirdOS overrides layered on top (do not hand-edit - regenerated per run).\n')
+    yaml.safe_dump(merged, f, default_flow_style=False, sort_keys=False)
+print('crave.yaml -> %s (%s)' % (dest_path, 'merged over base' if base else 'installed'))
+PY
 }
 
 # --------------------------------------------------------- the remote command ----
@@ -97,6 +211,13 @@ echo "--- host probe (recorded for the X2 record) ---"
 nproc; free -g | head -3; df -h .; df -h \$HOME
 command -v git python3 curl
 echo "--- bootstrap EmberbirdOS @ $COMMIT ---"
+# Crave rule (crave/rules.md): do not make a folder and sync inside that to avoid
+# conflicts (i.e. never cd into a subfolder before syncing). repo searches UPWARD for
+# an existing .repo, and the Crave workspace root IS itself a repo checkout - so the
+# sync must run AT that root, never from a folder created beneath it. Capture the root
+# here, before cd-ing into the source checkout, and hand it to the recipe as WORKSPACE.
+# (No backticks below: this heredoc is unquoted, so backticks would be executed.)
+ROOT="\$PWD"
 rm -rf eb
 git init -q eb && cd eb
 git remote add origin $repo_url
@@ -106,7 +227,8 @@ if ! git fetch --depth=1 -q origin $COMMIT; then
 fi
 git checkout -q FETCH_HEAD
 echo "building commit: \$(git rev-parse HEAD)  branch: $branch"
-WORKSPACE="\$(pwd)/emberbird-aosp" bash tools/guest-build/build-from-manifest.sh
+echo "sync root (owns .repo): \$ROOT"
+WORKSPACE="\$ROOT" bash tools/guest-build/build-from-manifest.sh
 '
 EOF
 }
@@ -144,13 +266,24 @@ case "$cmd" in
 
   log)
     ensure_ticket >/dev/null
-    ( cd "$TICKET_DIR" && bash "$CRAVE_SHIM" getlog )
+    j="$(job_record)"
+    if [ -n "$j" ]; then
+      ( cd "$TICKET_DIR" && bash "$CRAVE_SHIM" getlog --projectID "$CRAVE_PROJECT_ID" --jobID "$j" )
+    else
+      ( cd "$TICKET_DIR" && bash "$CRAVE_SHIM" getlog )
+    fi
     ;;
 
   pull)
     ensure_ticket >/dev/null
-    log "pulling eb/image/out/ from the remote workspace into $REPO_ROOT/image/out"
-    ( cd "$TICKET_DIR" && bash "$CRAVE_SHIM" pull eb/image/out/ )
+    j="$(job_record)"
+    if [ -n "$j" ]; then
+      log "pulling eb/image/out/ (job $j) from the remote workspace into $REPO_ROOT/image/out"
+      ( cd "$TICKET_DIR" && bash "$CRAVE_SHIM" pull --projectID "$CRAVE_PROJECT_ID" --job "$j" eb/image/out/ )
+    else
+      log "pulling eb/image/out/ from the remote workspace into $REPO_ROOT/image/out"
+      ( cd "$TICKET_DIR" && bash "$CRAVE_SHIM" pull eb/image/out/ )
+    fi
     src="$TICKET_DIR/eb/image/out"
     if [ -d "$src" ]; then
       mkdir -p "$REPO_ROOT/image/out"
@@ -175,27 +308,28 @@ case "$cmd" in
     # longer queued or running": then the log decides between success and failure, and a
     # success is followed straight through to the pull.
     ensure_ticket >/dev/null
-    JOB="${JOB:-}"
-    if [ -z "$JOB" ] && [ -f "$REPO_ROOT/image/out/crave-job.txt" ]; then
-      JOB="$(python3 - "$REPO_ROOT/image/out/crave-job.txt" <<'PY' 2>/dev/null || true
-import json, re, sys
-raw = open(sys.argv[1]).read()
-m = re.search(r'"jobid"\s*:\s*(\d+)', raw) or re.search(r'(\d{4,})', raw)
-print(m.group(1) if m else '', end='')
-PY
-)"
-    fi
+    JOB="$(job_record)"
     [ -n "$JOB" ] || die "no job id: set JOB=<id>, or run 'run' first so image/out/crave-job.txt exists"
     interval="${WATCH_INTERVAL:-300}"
     # A long wait must not be ended by one flaky poll: under `set -e` a non-zero result
     # from either probe would abort the whole watch silently, which is exactly how an
     # artifact gets missed. Both readers are therefore total - they swallow failure and
     # report "unknown" instead, and the loop keeps its own count of consecutive failures.
+    # The active-jobs table is "Id  Workspace  Commands...  Status". The Commands
+    # column holds the multi-line `bash -lc '...'` payload, so a fixed column index
+    # reads the command text (observed: state="-lc") and never the status - the job
+    # then looks permanently in-flight and completion is missed. Take the last field,
+    # and accept it only if it is a known status word.
     read_state() {
-      ( cd "$TICKET_DIR" && bash "$CRAVE_SHIM" list 2>/dev/null | tr -d '\r' | awk -v j="$JOB" '$1==j {print $4}' ) || true
+      ( cd "$TICKET_DIR" && bash "$CRAVE_SHIM" list 2>/dev/null | tr -d '\r' | awk -v j="$JOB" '
+          $1==j {
+            for (i=NF; i>=1; i--)
+              if ($i ~ /^(queued|pending|starting|running|failed|success|succeeded|successful|complete|completed|cancelled|canceled|stopped|error|timeout|timedout)$/) { print $i; exit }
+            print "unknown"; exit
+          }' ) || true
     }
     read_last() {
-      ( cd "$TICKET_DIR" && timeout 90 bash "$CRAVE_SHIM" getlog 2>/dev/null | tr -d '\r' | tail -1 ) || true
+      ( cd "$TICKET_DIR" && timeout 90 bash "$CRAVE_SHIM" getlog --projectID "$CRAVE_PROJECT_ID" --jobID "$JOB" 2>/dev/null | tr -d '\r' | tail -1 ) || true
     }
     misses=0
     log "watching job $JOB every ${interval}s"
@@ -211,19 +345,22 @@ PY
         continue
       fi
       misses=0
-      printf '%s  job=%s  state=%s  | %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$JOB" "${state:-finished}" "$last"
-      if [ -z "$state" ]; then
-        log "job $JOB left the queue - capturing the remote log"
-        ( cd "$TICKET_DIR" && bash "$CRAVE_SHIM" getlog ) > "$REPO_ROOT/image/out/crave-remote-log.txt" 2>&1 || true
-        if grep -qi 'build successful' "$REPO_ROOT/image/out/crave-remote-log.txt"; then
-          log "remote build reported success - pulling the artifact and the X2 record"
-          bash "$REPO_ROOT/tools/crave/run-remote-build.sh" pull
-        else
-          die "job $JOB ended without 'Build Successful'; see image/out/crave-remote-log.txt"
-        fi
-        break
+      printf '%s  job=%s  state=%s  | %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$JOB" "${state:-<left queue>}" "$last"
+      # Still active -> keep polling. Anything else is terminal: a named end state, or
+      # the job having left the active-jobs table entirely (state empty while the
+      # client DID answer, so this is not the "no answer" case handled above).
+      case "$state" in
+        queued|pending|starting|running) sleep "$interval"; continue ;;
+      esac
+      log "job $JOB is no longer active (state=${state:-<left queue>}) - capturing the remote log"
+      ( cd "$TICKET_DIR" && bash "$CRAVE_SHIM" getlog --projectID "$CRAVE_PROJECT_ID" --jobID "$JOB" ) > "$REPO_ROOT/image/out/crave-remote-log.txt" 2>&1 || true
+      if grep -qi 'build successful' "$REPO_ROOT/image/out/crave-remote-log.txt"; then
+        log "remote build reported success - pulling the artifact and the X2 record"
+        bash "$REPO_ROOT/tools/crave/run-remote-build.sh" pull
+      else
+        die "job $JOB ended in state '${state:-unknown}' without 'Build Successful'; see image/out/crave-remote-log.txt"
       fi
-      sleep "$interval"
+      break
     done
     ;;
 

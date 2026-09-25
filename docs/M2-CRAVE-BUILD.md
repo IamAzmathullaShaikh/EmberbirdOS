@@ -10,10 +10,12 @@
 >
 > **This is a runbook, and it has been executed — but it is still not a result.** On
 > 2026-09-24 the remote build was launched against the owner's Crave account
-> (job **301689**, project `LOS 20` id 36, platform `linux16`
-> <https://foss.crave.io/app/#/build/info/301689?team=14>). It is recorded as **queued**, and
-> as of this writing it has not run: the account shows **0 tokens/sec on `linux16`**, which is
-> the platform's allocation gate. The launch path is therefore proven end to end up to the
+> (first job **301689** on `LOS 20` id 36, cancelled while still queued; relaunched as job
+> **301767** on project `LOS 22.1` id 93, platform `linux16`
+> <https://foss.crave.io/app/#/build/info/301767?team=14>). It is recorded as **queued**, and
+> as of this writing it has not run: it sits in the **free build queue** waiting for a
+> node (the free queue costs no tokens — `crave run` without `--platform` — so this is a
+> queue-position wait, **not** a token/compute gate). The launch path is therefore proven end to end up to the
 > queue, and X2 stays OPEN until an artifact comes back, is re-hashed locally and is
 > recorded under `docs/evidence/M2/`. See
 > [Executed 2026-09-24](#executed-2026-09-24-what-the-run-actually-required) for the exact
@@ -52,16 +54,29 @@ runs on any runner with the disk, so the Crave path and the CI path cannot drift
 
    The job is therefore launched from a throwaway **ticket checkout** whose origin *is* the
    base project's source URL — `tools/crave/run-remote-build.sh` creates it under
-   `$TEMP/crave-ticket-36` and the job bootstraps this repository inside the remote
-   workspace at the exact commit you are standing on. A Crave project is never created, and
-   none is needed: the base project is a **container**, and M2's provenance anchor remains
-   the X1 lock.
+   `$TEMP/crave-ticket-<project-slug>` (e.g. `crave-ticket-los20`, keyed to the project
+   *name* so it is stable per project and a switch cannot silently reset the build cache)
+   and the job bootstraps this repository inside the remote workspace at the exact commit
+   you are standing on. A Crave project is never created, and none is needed: the base
+   project is a **container**, and M2's provenance anchor remains the X1 lock.
 
    Which container, and why: the pinned manifest is Bliss's `arcadia-x86` on an Android 13
    base, so the base project is `LOS 20` (id **36**, <https://github.com/accupara/los20.git>),
    Crave's Android 13 AOSP project. `crave.yaml` in this repo pins that choice plus two
-   overrides (`ignoreClientHostname`, `no-patch`) and is copied into the ticket by the
-   launcher, because Crave only reads `crave.yaml` from the tree it is run in.
+   overrides (`ignoreClientHostname`, `no-patch`). The launcher does **not** overwrite the
+   ticket's own `crave.yaml`: it *merges* our per-project block into whatever the base
+   project ships (writing to `.repo/manifests/crave.yaml` when the tree is repo-based, else
+   the top), and it **fails loudly** if our overrides are not keyed to the project name
+   being launched — because Crave matches the block by dashboard project name, so a
+   name/id mismatch would silently drop `ignoreClientHostname`/`no-patch` (exactly what the
+   301767 relaunch under `LOS 22.1` did).
+
+   This match is **required, not a preference**. Crave's own rule
+   (`~/.crave/docs/crave/getting-started/unsupported-roms.md`): *"Sync android 14 ROMs on
+   Android 14 base project only."* An Android 13 tree is therefore synced on the Android 13
+   base project. Relaunching this job under `LOS 22.1` (id 93, **Android 15**) broke that
+   rule and was one of the two faults in the first real run — see
+   [`evidence/M2/x2-job-301767-failure.txt`](evidence/M2/x2-job-301767-failure.txt).
 
    **Platform:** project 36 accepts `linux16` (`t2d-standard-16`) and refuses `linux32`,
    `linux64`, `linux-all` and `linux-t2d-32` with `Invalid platform for project`.
@@ -92,7 +107,9 @@ bash tools/crave/run-remote-build.sh pull
 The launcher does three things that are not optional, and explains why in its header:
 
 1. it runs the job from a **ticket checkout** whose origin is the base project's URL (the
-   only way `crave run` resolves a project for this repo), and copies `crave.yaml` into it;
+   only way `crave run` resolves a project for this repo), and **merges** this repo's
+   `crave.yaml` overrides into it (see below — it does not clobber the base project's own
+   `crave.yaml`);
 2. it pins the job to the **exact commit** you are on, so a later push cannot silently
    change what was built;
 3. it goes through `tools/crave/crave.sh`, which always passes the client's `-n` flag and
@@ -104,9 +121,24 @@ uploading your local diff, which is what we want, because X2 must describe **the
 manifest**, not a working tree. The first run pays for the full `repo sync`; Crave caches
 build trees and compiler output, so later runs are much cheaper.
 
-Inside the remote job, `WORKSPACE` is set to `$(pwd)/emberbird-aosp` — that is, onto the
-workspace volume that Crave provisions for the build, not onto `$HOME`. The X2 record and
-the image land in `eb/image/out/` for a single `pull`.
+Inside the remote job, `WORKSPACE` is set to the job's **workspace root** — `$PWD` captured
+*before* the source checkout is entered, i.e. the directory Crave provisions that already
+owns `.repo`. It is deliberately **not** a folder created under that root.
+
+That is a hard Crave rule, not a preference. `~/.crave/docs/crave/rules.md`:
+*"Do not make a folder and sync inside that to avoid conflicts (like `cd folder; repo
+sync`)"*, and `unsupported-roms.md` repeats it as *"Do not use `rm -rf *` or `cd` into
+another folder in crave run before syncing, no matter who tells you to."* The reason is
+mechanical: `repo` searches **upward** for an existing `.repo`, and the Crave workspace
+root is itself a repo checkout. Syncing from a nested folder makes `repo` reuse the root
+(`repo: reusing existing repo client checkout in /tmp/src/android`) while every relative
+`.repo/…` path resolves against the nested cwd — which dies with
+`fatal: cannot change to '.repo/manifests': No such file or directory` (exit 128).
+`build-from-manifest.sh` now **refuses to start** if `WORKSPACE` is nested under another
+checkout's `.repo`.
+
+The EmberbirdOS source is checked out beside the sync root (`<root>/eb`), and the X2 record
+plus the image land in `eb/image/out/` for a single `pull`.
 
 Prefer a persistent environment? Enter a devspace and run the same script inside it:
 
@@ -181,14 +213,23 @@ checkout in the launcher.
 | `linux-t2d-32` | `t2d-standard-32` | `Invalid platform for project` |
 | `aosp-silver` | `t2d-standard-16` | `Cannot read properties of null (reading 'details')` |
 
-**4. Compute is token-gated, and this account has none of it on `linux16`.** `crave list`
-reports `Tokens Per Second` per platform: **0** for `linux16` (and every platform except
-`aosp-silver`, which shows 16). Two jobs launched on `linux16` — the probe (301688, since
-stopped) and the build (301689) — both sat in state `queued`, with the log repeating
-`Waiting for build job <id> to run`. This is an account/allocation matter, not a repo
-defect: **X2 cannot complete until compute is granted** (accrued tokens, an allocation, or a
-platform that is funded). Nothing in the repository changes that, and the queue state is
-recorded here rather than being papered over.
+**4. The build runs on the free queue; the wait is queue position, not a token gate.**
+`crave list`'s `Tokens Per Second` column is each platform's **cost** (`build_tokens_per_second`),
+not a balance — `aosp-silver` shows 16 because it *costs* 16 tokens/sec, and the `0`s are
+platforms whose cost is not published to this account. The free queue (`crave run` with **no**
+`--platform`) costs zero tokens and is what this build uses, so an empty wallet does not block
+it: `crave wallet transactions` returns *No transactions found for this user*, and that is
+expected for a free-queue job. Two free-queue jobs on `linux16` — the probe (301688, since
+stopped) and the build (301689) — both sat `queued`, with the log repeating `Waiting for build
+job <id> to run`; that is a wait for a free build node, not a compute allocation. (Update:
+301689 was cancelled — one account runs one job at a time — and the build relaunched on
+project **LOS 22.1** as job **301767**, still queued on `linux16` in the free queue.) What the
+repo cannot change: (a) free-queue position clears when a node frees up (the intended path, and
+what the watcher waits on); (b) *paying* to skip the queue via `--platform aosp-silver` is
+separately blocked here — submission returns `Cannot read properties of null (reading 'details')`
+on projects 36 **and** 93, a wallet-not-linked precondition (wallet creation/linking is an admin
+operation — contact Crave support). So the honest state is: **queued on free compute, waiting for
+a node**, not "denied compute". Machine-level analysis: `~/.crave/CRAVE-COMPUTE-NOTES.md`.
 
 **5. Nothing was built, so nothing is claimed.** No artifact, no hash, no boot. X2 remains
 OPEN; when a job does run, `pull` brings back `x2-provenance.json` plus the image, the local
