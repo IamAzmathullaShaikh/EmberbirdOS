@@ -116,6 +116,13 @@ The launcher does three things that are not optional, and explains why in its he
    clears the poisoned update state — otherwise every Crave call costs 107 s and 2 x 28 MB
    before it does anything ([CRAVE-CLIENT-UPDATE-LOOP.md](CRAVE-CLIENT-UPDATE-LOOP.md)).
 
+Before submitting, `run` also **refuses to launch while this account already has a job
+queued or running** — Crave's Queue Rule (`crave/rules.md`) is one build at a time per
+account, and breaking it is what produced the 301689→301767 pile-up. It reads the client's
+"Your active jobs" table; if it is non-empty the launch aborts with the active job listed.
+Stop the active job first (`bash tools/crave/run-remote-build.sh stop`), or set `FORCE=1`
+if you have just stopped it and the table has not refreshed yet.
+
 `--no-patch` is implicit in the launcher: it builds the committed revision as-is instead of
 uploading your local diff, which is what we want, because X2 must describe **the pinned
 manifest**, not a working tree. The first run pays for the full `repo sync`; Crave caches

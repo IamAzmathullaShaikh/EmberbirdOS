@@ -92,6 +92,30 @@ PY
 
 [ -f "$CRAVE_SHIM" ] || die "missing $CRAVE_SHIM"
 
+# Crave rule (crave/rules.md, Queue Rules): "Do not Queue multiple builds at once: one
+# account can only trigger one build at once." Breaking it is how 301689->301767 and the
+# zombie-watcher pile-ups happened. `crave list` prints a clean "Your active jobs:" table
+# (Job Id | Project Name | Job Status | Local Workspace | Job Url) that lists ONLY jobs
+# that are still queued/running - finished jobs drop to "Job History:". So the guard is
+# simply: is that table non-empty? Return the active rows (id + status), empty if none.
+# Total (never aborts the caller under set -e): a flaky client reads as "no answer", which
+# we treat conservatively as "cannot confirm" rather than "clear to launch".
+active_jobs() {
+  ( cd "$TICKET_DIR" 2>/dev/null && bash "$CRAVE_SHIM" list 2>/dev/null | tr -d '\r' \
+      | awk '
+          /^Your active jobs:/ { insec=1; next }
+          insec && /^[A-Za-z].*:[[:space:]]*$/ { insec=0 }        # next section header ends it
+          insec && $1 ~ /^[0-9]+$/ {
+            # Project Name can contain spaces ("LOS 20"), so a fixed column index is
+            # wrong (it reads "20"). Scan the row for a known status word instead.
+            st="active"
+            for (i=2; i<=NF; i++)
+              if ($i ~ /^(queued|pending|starting|running|building|syncing)$/) { st=$i; break }
+            print $1 "  " st
+          }
+        ' ) || true
+}
+
 repo_url="$(git -C "$REPO_ROOT" remote get-url origin)"
 branch="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)"
 COMMIT="${COMMIT:-$(git -C "$REPO_ROOT" rev-parse HEAD)}"
@@ -237,6 +261,19 @@ cmd="${1:-run}"
 case "$cmd" in
   run)
     ensure_ticket
+    # One build at a time (Crave Queue Rule). Refuse if this account already has a job
+    # queued or running. FORCE=1 overrides (e.g. you have just stopped the old job and
+    # the table has not refreshed yet), and it is loud about doing so.
+    active="$(active_jobs)"
+    if [ -n "$active" ]; then
+      if [ -n "${FORCE:-}" ]; then
+        log "FORCE=1: launching despite an already-active job:"
+        printf '%s\n' "$active" | sed 's/^/  active: /'
+      else
+        printf '%s\n' "$active" | sed 's/^/  active: /' >&2
+        die "an account can only run one build at a time (crave/rules.md). Stop the active job first (bash tools/crave/run-remote-build.sh stop) or re-run with FORCE=1 if you know it is already stopping."
+      fi
+    fi
     log "launching: project $CRAVE_PROJECT_NAME (id $CRAVE_PROJECT_ID), platform $CRAVE_PLATFORM"
     printf 'recipe commit: %s (%s)\n' "$COMMIT" "$branch"
     if [ -n "${ATTACH:-}" ]; then
