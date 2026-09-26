@@ -145,8 +145,43 @@ if [ -z "${SKIP_SYNC:-}" ]; then
     repo sync -c -j"$SYNC_JOBS" --no-tags --force-sync
   fi
 
+  # A pre-seeded Crave tree was synced for the BASE project's manifest (LOS 20). When we
+  # re-point .repo to our BlissRoms arcadia-x86 manifest, resync.sh prunes/optimizes and
+  # can report "All repositories synchronized successfully" while a NEWLY-ADDED project
+  # path was never materialized on disk. `repo manifest -r` then dies with a raw
+  # FileNotFoundError on the first missing project (observed: bootable/aaropa, job
+  # 302004). Verify every manifest project path exists; sync ONLY the missing ones
+  # (crave/rules.md forbids a needless full re-sync of the pre-seeded tree), then re-check
+  # and stop with a precise list if anything is still absent.
+  log "verifying the synced tree is complete (every manifest project present on disk)"
+  total=0
+  missing_projects=""
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    total=$(( total + 1 ))
+    [ -d "$WORKSPACE/$p" ] || missing_projects="$missing_projects $p"
+  done < <(repo list -p 2>/dev/null)
+  if [ -n "$missing_projects" ]; then
+    # shellcheck disable=SC2086
+    set -- $missing_projects
+    log "sync incomplete: $# of $total project(s) absent on disk - syncing only those"
+    printf '  missing:%s\n' "$missing_projects"
+    # Targeted sync of just the missing project paths - never a full re-sync (Crave rule).
+    # shellcheck disable=SC2086
+    if ! repo sync -c -j"$SYNC_JOBS" --no-tags --force-sync $missing_projects; then
+      die "targeted sync of the missing projects failed:$missing_projects. If a project pins a ref upstream removed (the log's 'revision refs/heads/master ... not found'), the pinned manifest $MANIFEST_REVISION must be re-cut (tools/manifest/resolve-manifest-lock.py)."
+    fi
+    still=""
+    for p in $missing_projects; do
+      [ -d "$WORKSPACE/$p" ] || still="$still $p"
+    done
+    [ -z "$still" ] || die "still missing after a targeted sync:$still. The pinned manifest $MANIFEST_REVISION references project(s) the tree cannot materialize; re-cut the lock."
+  fi
+  log "sync complete: all $total manifest projects present on disk"
+
   log "canonical check: repo manifest -r against the committed X1 lock"
-  repo manifest -r -o "$OUT_DIR/repo-manifest-r.xml"
+  repo manifest -r -o "$OUT_DIR/repo-manifest-r.xml" \
+    || die "repo manifest -r failed - the synced tree is missing or cannot resolve a project the pinned manifest $MANIFEST_REVISION references (see the sync-completeness step above), so the canonical X1 witness cannot be produced."
   cd "$REPO_ROOT"
   python3 tools/manifest/verify-lock.py || die "the synced tree does not match the committed X1 lock - stopping before the build"
 else
